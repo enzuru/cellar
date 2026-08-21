@@ -1,0 +1,100 @@
+using Gtk 4.0;
+using Adw 1;
+using GtkSource 5;
+
+Adw.Dialog editor_dialog {
+  title: _("Edit Cell");
+  content-width: 680;
+  content-height: 480;
+
+  child: Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      show-start-title-buttons: false;
+      show-end-title-buttons: false;
+
+      title-widget: Adw.WindowTitle editor_title {
+        title: _("Edit Cell");
+        subtitle: "A1";
+      };
+
+      [start]
+      Gtk.Button cancel_button {
+        label: _("Cancel");
+      }
+
+      [end]
+      Gtk.Button apply_button {
+        label: _("Apply");
+        tooltip-text: _("Apply (Ctrl+Return)");
+
+        styles [
+          "suggested-action",
+        ]
+      }
+    }
+
+    content: Gtk.Box {
+      orientation: vertical;
+
+      Gtk.ScrolledWindow {
+        hexpand: true;
+        vexpand: true;
+
+        GtkSource.View source_view {
+          monospace: true;
+          show-line-numbers: true;
+          auto-indent: true;
+          insert-spaces-instead-of-tabs: true;
+          tab-width: 2;
+          highlight-current-line: true;
+          top-margin: 8;
+          bottom-margin: 8;
+          left-margin: 8;
+          right-margin: 8;
+
+          buffer: GtkSource.Buffer source_buffer {};
+        }
+      }
+
+      Gtk.Separator {}
+
+      // Live result of the expression as it is typed.
+      Gtk.Box {
+        spacing: 8;
+        margin-start: 12;
+        margin-end: 12;
+        margin-top: 8;
+        margin-bottom: 8;
+
+        Gtk.Label {
+          label: _("Result");
+
+          styles [
+            "dim-label",
+            "caption-heading",
+          ]
+        }
+
+        Gtk.ScrolledWindow {
+          hexpand: true;
+          vscrollbar-policy: never;
+          propagate-natural-height: true;
+          max-content-height: 72;
+
+          Gtk.Label result_label {
+            xalign: 0;
+            hexpand: true;
+            selectable: true;
+            wrap: true;
+            label: "";
+
+            styles [
+              "monospace",
+            ]
+          }
+        }
+      }
+    };
+  };
+}

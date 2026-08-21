@@ -1,0 +1,9 @@
+# Blueprint output
+ui/*.ui
+
+# Guile bytecode
+*.go
+
+# nix
+result
+result-*

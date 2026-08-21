@@ -1,0 +1,141 @@
+using Gtk 4.0;
+using Adw 1;
+
+menu primary_menu {
+  section {
+    item {
+      label: _("_Open…");
+      action: "app.open";
+    }
+
+    item {
+      label: _("_Save");
+      action: "app.save";
+    }
+
+    item {
+      label: _("Save _As…");
+      action: "app.save-as";
+    }
+  }
+
+  section {
+    item {
+      label: _("_Recalculate");
+      action: "app.recalculate";
+    }
+
+    item {
+      label: _("_Clear Cell");
+      action: "app.clear-cell";
+    }
+  }
+
+  section {
+    item {
+      label: _("_Keyboard Shortcuts");
+      action: "app.shortcuts";
+    }
+
+    item {
+      label: _("_About Cellar");
+      action: "app.about";
+    }
+  }
+}
+
+Adw.ApplicationWindow main_window {
+  title: _("Cellar");
+  default-width: 1100;
+  default-height: 720;
+
+  content: Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      title-widget: Adw.WindowTitle window_title {
+        title: _("Cellar");
+        subtitle: _("Untitled");
+      };
+
+      [start]
+      Gtk.Button recalculate_button {
+        icon-name: "view-refresh-symbolic";
+        tooltip-text: _("Recalculate the sheet");
+      }
+
+      [end]
+      Gtk.MenuButton {
+        icon-name: "open-menu-symbolic";
+        tooltip-text: _("Main menu");
+        menu-model: primary_menu;
+        primary: true;
+      }
+    }
+
+    // The cell bar: which cell is selected, and the Guile source behind it.
+    [top]
+    Gtk.Box {
+      spacing: 6;
+      margin-start: 6;
+      margin-end: 6;
+      margin-top: 3;
+      margin-bottom: 3;
+
+      styles [
+        "toolbar",
+      ]
+
+      Gtk.Label reference_label {
+        label: "A1";
+        width-chars: 6;
+        xalign: 0;
+
+        styles [
+          "monospace",
+          "heading",
+        ]
+      }
+
+      Gtk.Separator {
+        orientation: vertical;
+      }
+
+      Gtk.Label source_label {
+        hexpand: true;
+        xalign: 0;
+        ellipsize: end;
+        single-line-mode: true;
+        label: _("empty — double-click a cell to write Guile");
+
+        styles [
+          "monospace",
+          "dim-label",
+        ]
+      }
+
+      Gtk.Button edit_button {
+        label: _("Edit");
+        tooltip-text: _("Edit this cell's Guile source (Enter)");
+      }
+    }
+
+    content: Adw.ToastOverlay toast_overlay {
+      Gtk.ScrolledWindow {
+        hexpand: true;
+        vexpand: true;
+        hscrollbar-policy: automatic;
+        vscrollbar-policy: automatic;
+
+        Gtk.ColumnView sheet_view {
+          show-row-separators: true;
+          show-column-separators: true;
+          reorderable: false;
+
+          styles [
+            "data-table",
+          ]
+        }
+      }
+    };
+  };
+}
