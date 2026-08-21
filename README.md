@@ -2,7 +2,7 @@
 
 **Warning: This app is AI generated and human reviewed. If that bothers you, move on.**
 
-An Adwaita spreadsheet app for GNOME that uses Guile Scheme expressions instead of spreadsheet language. The ultimate marriage of the GNOME and GNU philosophies.
+An Adwaita spreadsheet app for GNOME that uses Guile Scheme expressions instead of spreadsheet language. This is the ultimate marriage of the GNOME and GNU philosophies.
 
 Every cell holds a **GNU Guile expression**. Double-click a cell and a real code
 editor opens; whatever you write there is the cell. References like `A1` are
@@ -12,6 +12,10 @@ ordinary variables, so a cell can say `(+ A1 B1)` — or `(apply + (map (lambda 
 Built with GTK4 and libadwaita, described in [Blueprint](https://gnome.pages.gitlab.gnome.org/blueprint-compiler/),
 and driven entirely from Guile through [G-Golf](https://www.gnu.org/software/g-golf/).
 **There is no C in this project.**
+
+## Name
+
+"Cellar" is a play on spreadsheet cells and Lisp cons cells, as this application uses both.
 
 ## Running it
 
