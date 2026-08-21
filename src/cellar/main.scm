@@ -14,7 +14,7 @@
 
 (define %rows 100)
 (define %columns 26)
-(define %application-id "org.gnu.Cellar")
+(define %application-id "dev.enzuru.Cellar")
 
 (define %css "
 .cellar-cell, .cellar-gutter {
@@ -107,6 +107,10 @@ columnview.data-table > header > button {
                             (show-selection r))))
 
       (install-css)
+      (install-icons)
+      ;; Wayland matches the window to its .desktop file by application id and
+      ;; ignores this; X11 has no such association and needs to be told.
+      (set-icon-name window %application-id)
       (set! grid (make-grid sheet-view sheet show-selection edit-cell))
 
       (connect edit-button 'clicked
@@ -154,6 +158,30 @@ columnview.data-table > header > button {
              (ui-in (dirname (dirname (dirname module-file))))))
       (ui-in (getcwd))
       (error "cellar: cannot find the ui directory; set CELLAR_UI_DIR")))
+
+(define (find-icon-directory)
+  "Locate the bundled icon theme when running from the source tree.
+
+Installed, the icons land in a share/icons that XDG_DATA_DIRS already covers,
+so #f here is the normal answer and not an error."
+  (define (icons-in directory)
+    (and directory
+         (let ((candidate (string-append directory "/data/icons")))
+           (and (file-exists? (string-append candidate "/hicolor/scalable/apps/"
+                                             %application-id ".svg"))
+                candidate))))
+  (or (getenv "CELLAR_ICON_DIR")
+      ;; src/cellar/main.scm -> src/cellar -> src -> the project root.
+      (let ((module-file (%search-load-path "cellar/main.scm")))
+        (and module-file
+             (icons-in (dirname (dirname (dirname module-file))))))
+      (icons-in (getcwd))))
+
+(define (install-icons)
+  (let ((directory (find-icon-directory)))
+    (when directory
+      (add-search-path (gtk-icon-theme-get-for-display (gdk-display-get-default))
+                       directory))))
 
 (define (install-css)
   (let ((provider (make <gtk-css-provider>)))
@@ -295,7 +323,7 @@ catch, so real failures are not silently swallowed."
 (define (show-about window)
   (let ((dialog (make <adw-about-dialog>
                   #:application-name "Cellar"
-                  #:application-icon "accessories-calculator-symbolic"
+                  #:application-icon %application-id
                   #:version "0.1.0"
                   #:developer-name "Written with GNU Guile, G-Golf and Blueprint"
                   #:comments "A spreadsheet with no formula language. Every cell is a Guile expression, and references like A1 are just variables you can use in it."

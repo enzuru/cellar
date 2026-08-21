@@ -7,7 +7,7 @@ BLUEPRINTS := $(wildcard ui/*.blp)
 UI := $(BLUEPRINTS:.blp=.ui)
 SOURCES := $(wildcard src/cellar/*.scm)
 
-.PHONY: all ui run check clean
+.PHONY: all ui run check smoke clean
 
 all: ui
 
@@ -21,6 +21,11 @@ run: ui
 
 check:
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/model-test.scm
+
+# Drives the real UI under a nested X server; needs xvfb-run, imagemagick, xdotool.
+smoke: ui
+	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool \
+	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-smoke.sh
 
 clean:
 	rm -f $(UI)

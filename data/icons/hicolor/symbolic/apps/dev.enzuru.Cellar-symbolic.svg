@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Cellar, symbolic variant.
+
+  GTK recolours symbolic icons by injecting `rect, circle, path { fill: ... }`,
+  so every shape here is a *filled* rect/circle/path in #000000. A stroke would
+  keep its literal colour and disappear against a dark theme, which is why the
+  parentheses are annulus sectors (two arcs of the same centre) rather than
+  stroked arcs.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>Cellar</title>
+
+  <!-- The sheet: a 1px frame, drawn as outer and inner rounded rectangles. -->
+  <path fill="#000000" fill-rule="evenodd"
+        d="M3 2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z
+           M3.25 3a1.25 1.25 0 0 0-1.25 1.25v7.5A1.25 1.25 0 0 0 3.25 13h9.5a1.25 1.25 0 0 0 1.25-1.25v-7.5A1.25 1.25 0 0 0 12.75 3z"/>
+
+  <!-- The header row. -->
+  <path fill="#000000"
+        d="M2 4.25A1.25 1.25 0 0 1 3.25 3h9.5A1.25 1.25 0 0 1 14 4.25V5H2z"/>
+
+  <!-- ( -->
+  <path fill="#000000"
+        d="M5.13 11.77A4.6 4.6 0 0 1 5.13 6.23L5.93 6.83a3.6 3.6 0 0 0 0 4.34z"/>
+  <!-- ) -->
+  <path fill="#000000"
+        d="M10.87 11.77A4.6 4.6 0 0 0 10.87 6.23L10.07 6.83a3.6 3.6 0 0 1 0 4.34z"/>
+  <!-- The cell between them. -->
+  <circle fill="#000000" cx="8" cy="9" r="0.95"/>
+</svg>

@@ -50,6 +50,8 @@
         "ScrolledWindow"
         "CssProvider"
         "StyleContext"
+        "IconTheme"
+        "Window"
         "ColumnView"
         "ColumnViewColumn"
         "ColumnViewCell"

@@ -26,7 +26,7 @@
             packages = with pkgs; [
               guile_3_0 g-golf blueprint-compiler gnumake pkg-config
               gtk4 libadwaita gtksourceview5 gobject-introspection
-              gtk4.dev adwaita-icon-theme
+              gtk4.dev adwaita-icon-theme hicolor-icon-theme
             ];
 
             # libgirepository dlopens the bare sonames recorded in each .typelib
@@ -39,7 +39,7 @@
               (map (p: pkgs.lib.getOutput "out" p) runtime);
 
             shellHook = ''
-              export XDG_DATA_DIRS="${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.adwaita-icon-theme}/share:${pkgs.gtk4}/share:$XDG_DATA_DIRS"
+              export XDG_DATA_DIRS="${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}:${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.adwaita-icon-theme}/share:${pkgs.hicolor-icon-theme}/share:${pkgs.gtk4}/share:$XDG_DATA_DIRS"
               echo "cellar dev shell -- run 'make run'"
             '';
           };

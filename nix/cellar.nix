@@ -1,7 +1,9 @@
 { lib, stdenv, makeWrapper, guile, g-golf, blueprint-compiler
+, desktop-file-utils
 , glib, gtk4, libadwaita, gtksourceview5, pango, gdk-pixbuf, graphene
 , harfbuzz, cairo
-, gobject-introspection, adwaita-icon-theme, gsettings-desktop-schemas }:
+, gobject-introspection, adwaita-icon-theme, hicolor-icon-theme
+, gsettings-desktop-schemas }:
 
 let
   runtime = [ glib gtk4 libadwaita gtksourceview5 pango gdk-pixbuf graphene
@@ -19,7 +21,7 @@ stdenv.mkDerivation {
 
   src = ../.;
 
-  nativeBuildInputs = [ makeWrapper blueprint-compiler ];
+  nativeBuildInputs = [ makeWrapper blueprint-compiler desktop-file-utils ];
   buildInputs = [ guile g-golf ] ++ runtime;
 
   # blueprint-compiler needs GtkSource on its typelib path to resolve `using GtkSource 5;`
@@ -35,6 +37,14 @@ stdenv.mkDerivation {
     runHook preInstall
     mkdir -p $out/share/cellar $out/bin
     cp -r src ui bin $out/share/cellar/
+
+    install -Dm644 data/dev.enzuru.Cellar.desktop \
+      $out/share/applications/dev.enzuru.Cellar.desktop
+    # The icon file name must match the application id exactly, or the desktop
+    # never finds the window's icon.
+    cp -r data/icons $out/share/icons
+    desktop-file-validate $out/share/applications/dev.enzuru.Cellar.desktop
+
     # Every --add-flags value must be a single whitespace-free token:
     # makeWrapper splits them, which is why this uses a launcher script rather
     # than -e "(@ (cellar main) main)".
@@ -50,7 +60,9 @@ stdenv.mkDerivation {
       `# g_binding_class_init's assertion at startup.` \
       --set GI_TYPELIB_PATH "${typelibPath}" \
       --set LD_LIBRARY_PATH "${lib.makeLibraryPath runtime}" \
-      --prefix XDG_DATA_DIRS : "${adwaita-icon-theme}/share:${gtk4}/share/gsettings-schemas/${gtk4.name}:${gsettings-desktop-schemas}/share/gsettings-schemas/${gsettings-desktop-schemas.name}"
+      `# $out/share carries Cellar's own icons; hicolor supplies the index.theme` \
+      `# that makes scalable/apps and symbolic/apps searchable at all.` \
+      --prefix XDG_DATA_DIRS : "$out/share:${hicolor-icon-theme}/share:${adwaita-icon-theme}/share:${gtk4}/share/gsettings-schemas/${gtk4.name}:${gsettings-desktop-schemas}/share/gsettings-schemas/${gsettings-desktop-schemas.name}"
     runHook postInstall
   '';
 

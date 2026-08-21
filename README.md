@@ -29,6 +29,11 @@ standalone wrapper with `nix build` and run `./result/bin/cellar`.
 
 Run the model's test suite — it needs no display — with `make check`.
 
+Both `make run` and `./result/bin/cellar` give you a window carrying the
+desktop's fallback icon. That is expected: the icon appears only once Cellar is
+*installed* somewhere the desktop already looks — `nix profile install .`, for
+instance. See the note under [Notes on G-Golf](#notes-on-g-golf).
+
 ## Writing cells
 
 |You type                      |You get                          |
@@ -97,12 +102,15 @@ flake.nix            dev shell + package; builds G-Golf from source
 nix/g-golf.nix       G-Golf 0.8.7, patched for NixOS dlopen paths
 ui/cellar.blp        main window: header bar, cell bar, column view
 ui/editor.blp        the cell editor dialog (AdwDialog + GtkSourceView)
+data/dev.enzuru.Cellar.desktop  the desktop entry; the file name is the application id
+data/icons/hicolor/  the application icon, full colour and symbolic
 src/cellar/gi.scm    all GObject Introspection imports, in one place
 src/cellar/model.scm the sheet: sources, evaluation, references — no GTK
 src/cellar/grid.scm  the GtkColumnView spreadsheet
 src/cellar/editor.scm the code editor and its live result preview
 src/cellar/main.scm  application, actions, files
 tests/model-test.scm headless tests for the model
+tests/gui-smoke.sh   drives the real UI under Xvfb (`make smoke`)
 ```
 
 `src/cellar/model.scm` deliberately has no GTK dependency, which is why the test
@@ -135,6 +143,18 @@ Two things worth knowing if you extend this:
 - Keyboard handling on a `GtkColumnView` must use the **capture** phase
   (`(set-propagation-phase controller 'capture)`). The view binds the arrow keys
   for its own row navigation and will swallow them in the bubble phase.
+- The window icon is not the application's to set, and there is no way to make
+  an uninstalled build show one. `gtk_window_set_icon_name` is an X11-only call
+  that Wayland ignores; there the compositor matches the toplevel's application
+  id against an installed `<id>.desktop` and reads its `Icon=` key. Since that
+  lookup happens in the compositor's process, nothing the app does reaches it:
+  `install-icons`' search path only feeds the app's own `GtkIconTheme` (which is
+  why the about dialog is fine), and the wrapper's `XDG_DATA_DIRS` only covers
+  the app's process, not GNOME Shell's. GTK 4.22 does implement
+  `xdg-toplevel-icon-v1`, which would let a client hand the compositor rendered
+  pixels instead, but mutter 50 does not implement the other half, so the global
+  is never advertised. Installing the desktop entry into a prefix the session
+  already searches is the only thing that works.
 - Packaging note: a wrapper must **set** `GI_TYPELIB_PATH`, not prepend to it.
   Inheriting a host path that points at a different glib makes GTK abort in
   `g_binding_class_init` at startup. Also note that glib's and pango's typelibs
@@ -144,8 +164,10 @@ Two things worth knowing if you extend this:
 
 The grid, the editor, evaluation, recalculation, error display, keyboard
 navigation and the packaged `nix build` were all exercised end-to-end against a
-real GTK build. Save/Open are the exception: each link was checked separately
-(the async callback fires and returns a `GFile`, `get-path` yields a string, and
-the save/load round-trip is covered by `make check`), but the four were never
-driven together in one automated run, because `GtkFileDialog` hands off to the
-desktop portal and its window cannot be scripted from a test harness.
+real GTK build, most of it by `make smoke`, which also confirms that the
+application icon resolves by application id and renders in the about dialog.
+Save/Open are the exception: each link was checked separately (the async
+callback fires and returns a `GFile`, `get-path` yields a string, and the
+save/load round-trip is covered by `make check`), but the four were never driven
+together in one automated run, because `GtkFileDialog` hands off to the desktop
+portal and its window cannot be scripted from a test harness.

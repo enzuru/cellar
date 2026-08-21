@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Cellar
+GenericName=Spreadsheet
+Comment=A spreadsheet whose formulas are Guile expressions
+Exec=cellar %f
+Icon=dev.enzuru.Cellar
+Terminal=false
+Categories=GTK;Office;Spreadsheet;
+Keywords=Spreadsheet;Guile;Scheme;Lisp;Cells;
+StartupNotify=true
