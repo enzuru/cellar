@@ -29,6 +29,7 @@
             grid-set-active!
             grid-refresh!
             grid-move-active!
+            grid-move-line!
             grid-focus!))
 
 ;; GTK_INVALID_LIST_POSITION -- what get-position returns for an unbound cell.
@@ -183,6 +184,25 @@ model exists only to give the view its row count."
     (scroll-to-row grid row)))
 
 (define (clamp n low high) (max low (min high n)))
+
+;; Moving a whole row or column is a model operation -- the sheet rewrites the
+;; references inside every cell so they follow the cells they name -- so all the
+;; grid does is ask for it and keep the active cell on the line that moved.
+(define (grid-move-line! grid axis delta)
+  "Move the active cell's row (AXIS 'row) or column (AXIS 'column) DELTA places.
+Returns #t when the sheet changed."
+  (let* ((sheet (grid-sheet grid))
+         (active (grid-active grid))
+         (row? (eq? axis 'row))
+         (from (if row? (ref-row active) (ref-column active)))
+         (to (+ from delta)))
+    (and (if row? (move-row! sheet from to) (move-column! sheet from to))
+         (let ((moved (if row?
+                          (make-ref to (ref-column active))
+                          (make-ref (ref-row active) to))))
+           (grid-set-active! grid moved)
+           (scroll-to-row grid (ref-row moved))
+           #t))))
 
 (define (scroll-to-row grid row)
   ;; gtk_column_view_scroll_to is GTK 4.12+; if the marshalling ever fails we

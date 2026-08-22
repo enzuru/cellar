@@ -80,5 +80,64 @@
   (check "roundtrip A3" "132" (cell-display s2 (name->ref "A3")))
   (check "roundtrip C4" "6" (cell-display s2 (name->ref "C4"))))
 
+(format #t "-- reordering~%")
+(let ((r (make-sheet 10 5)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (src name) (cell-source r (name->ref name)))
+  (define (shown-in name) (cell-display r (name->ref name)))
+  (put! "A1" "1")
+  (put! "A2" "2")
+  (put! "A3" "3")
+  (put! "B1" "(* A1 10)")
+  (put! "B3" "(sum (range \"A1\" \"A2\"))")
+  (put! "C1" "(list 'A1 my-A1)")
+
+  (check "move-row! reports the move" #t (move-row! r 2 0))
+  (check "the moved row is at its new index" "3" (src "A1"))
+  (check "the rows it passed slid down" "1" (src "A2"))
+  (check "cells move with their row" "(* A2 10)" (src "B2"))
+  (check "references follow the cells they name" "10" (shown-in "B2"))
+  (check "range endpoints are rewritten too"
+         "(sum (range \"A2\" \"A3\"))" (src "B1"))
+  (check "a moved range still covers the same cells" "3" (shown-in "B1"))
+  (check "quoted refs move too, tokens that merely contain one do not"
+         "(list 'A2 my-A1)" (src "C2"))
+
+  (check "move-column! reports the move" #t (move-column! r 1 2))
+  (check "cells move with their column" "(* A2 10)" (src "C2"))
+  (check "the column it displaced slid left" "(list 'A2 my-A1)" (src "B2"))
+  (check "values survive the move" "3" (shown-in "C1"))
+
+  (check "a move onto itself does nothing" #f (move-row! r 1 1))
+  (check "a move off the top does nothing" #f (move-row! r 0 -1))
+  (check "a move past the last row does nothing" #f (move-row! r 0 10))
+  (check "a move past the last column does nothing" #f (move-column! r 0 5))
+  (check "the sheet is untouched by a refused move" "3" (src "A1")))
+
+;; A range is a rectangle described by two corners, and the rectangle is what
+;; the user means: reordering the lines of a table must not change its subtotal.
+(let ((r (make-sheet 8 2)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (src name) (cell-source r (name->ref name)))
+  (define (shown-in name) (cell-display r (name->ref name)))
+  (put! "A1" "1")
+  (put! "A2" "2")
+  (put! "A3" "3")
+  (put! "B4" "(sum (range \"A1\" \"A3\"))")
+  (check "the range sums three cells to begin with" "6" (shown-in "B4"))
+
+  (move-row! r 2 0)
+  (check "a move inside a range leaves its corners alone"
+         "(sum (range \"A1\" \"A3\"))" (src "B4"))
+  (check "so the subtotal survives the reordering" "6" (shown-in "B4"))
+  (check "while the cells themselves did move" "3" (src "A1"))
+
+  ;; Row 1 (the 1) out to the bottom: it leaves the range behind.
+  (move-row! r 1 7)
+  (check "a row moved out of a range drops out of it"
+         "(sum (range \"A1\" \"A2\"))" (src "B3"))
+  (check "and the subtotal follows" "5" (shown-in "B3"))
+  (check "the row itself is still on the sheet" "1" (src "A8")))
+
 (format #t "~%~a~%" (if (zero? failures) "ALL TESTS PASSED" (format #f "~a FAILURE(S)" failures)))
 (exit (if (zero? failures) 0 1))

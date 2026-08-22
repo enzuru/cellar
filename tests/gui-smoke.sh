@@ -6,7 +6,7 @@
 # it for real. Run it from inside `nix develop`:
 #
 #     nix develop -c nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool \
-#       -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-smoke.sh
+#       nixpkgs#dbus -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-smoke.sh
 #
 # Screenshots land in ${OUT:-/tmp/cellar-smoke}.
 #
@@ -22,7 +22,10 @@ mkdir -p "$OUT"
 
 export GDK_BACKEND=x11 GSK_RENDERER=cairo GUILE_AUTO_COMPILE=0
 
-guile -L src -s bin/cellar.scm example.cellar > "$OUT/app.log" 2>&1 &
+# dbus-run-session, because GApplication is single-instance: with a Cellar
+# already running on your session bus this one would hand its activation to
+# that window and exit, leaving nothing here to photograph.
+dbus-run-session -- guile -L src -s bin/cellar.scm example.cellar > "$OUT/app.log" 2>&1 &
 APP=$!
 trap 'kill $APP 2>/dev/null' EXIT
 
@@ -63,16 +66,29 @@ xdotool type --delay 30 '(/ 1 0)'; sleep 2
 xdotool key ctrl+Return; sleep 4
 shot 6-error
 
+# Reordering. Ctrl+Shift+arrow moves the active cell's whole row or column;
+# every reference is rewritten with it, so the subtotal in the Total column has
+# to come out of the move unchanged.
+echo "6. reorder rows and columns"
+xdotool mousemove 220 164 click 1; sleep 2
+xdotool key ctrl+shift+Down; sleep 3
+shot 7-row-moved
+xdotool key ctrl+shift+Right; sleep 3
+shot 8-column-moved
+# And a move that would run off the edge of the sheet only says so.
+xdotool key ctrl+shift+Left ctrl+shift+Left ctrl+shift+Left; sleep 3
+shot 9-edge
+
 # The application icon, resolved by application id out of data/icons. The menu
 # button is at 957 -- 1070 is the close button, which quits the app instead.
-echo "6. about dialog"
+echo "7. about dialog"
 xdotool mousemove 957 27 click 1; sleep 3
-shot 7-menu
+shot 10-menu
 # Click "About Cellar" by position. Never press Return here: the highlighted
 # item is "Open...", and that summons the portal file chooser onto your real
 # desktop.
-xdotool mousemove 907 297 click 1; sleep 4
-shot 8-about
+xdotool mousemove 907 429 click 1; sleep 4
+shot 11-about
 xdotool key Escape; sleep 2
 
 echo

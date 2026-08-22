@@ -11,6 +11,7 @@
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
   #:use-module (ice-9 match)
+  #:use-module (ice-9 regex)
   #:export (make-sheet
             sheet?
             sheet-rows
@@ -24,6 +25,8 @@
             cell-error?
             cell-error-message
             invalidate-sheet!
+            move-row!
+            move-column!
             sheet-refs
             sheet->alist
             alist->sheet!
@@ -171,6 +174,134 @@ Used by the editor's live result preview."
           (or (< (ref-row a) (ref-row b))
               (and (= (ref-row a) (ref-row b))
                    (< (ref-column a) (ref-column b)))))))
+
+
+;;;
+;;; Reordering
+;;;
+
+;; Moving a row is not just moving its cells: every reference on the sheet has
+;; to follow the cell it names, or a sheet would change meaning the moment it
+;; was rearranged.  So a move relocates the sources *and* rewrites the
+;; references inside them through the same permutation.
+
+(define (shift-index i from to)
+  "Where index I lands when the item at FROM is moved to TO and the indices in
+between slide over by one."
+  (cond ((= i from) to)
+        ((and (< from i) (<= i to)) (- i 1))
+        ((and (<= to i) (< i from)) (+ i 1))
+        (else i)))
+
+(define (move-row! sheet from to)
+  "Move row FROM to index TO, both 0-based.  Returns #t when the sheet changed,
+or #f when the move is a no-op or out of range."
+  (move-line! sheet 'row (sheet-rows sheet) from to))
+
+(define (move-column! sheet from to)
+  "Move column FROM to index TO, both 0-based.  Returns #t when the sheet
+changed, or #f when the move is a no-op or out of range."
+  (move-line! sheet 'column (sheet-columns sheet) from to))
+
+(define (ref-index axis r)
+  (if (eq? axis 'row) (ref-row r) (ref-column r)))
+
+(define (relocate axis from to r)
+  "Where reference R lands when FROM moves to TO along AXIS."
+  (if (eq? axis 'row)
+      (make-ref (shift-index (ref-row r) from to) (ref-column r))
+      (make-ref (ref-row r) (shift-index (ref-column r) from to))))
+
+(define (move-line! sheet axis limit from to)
+  "The common core of move-row! and move-column!."
+  (and (integer? from) (integer? to)
+       (>= from 0) (< from limit)
+       (>= to 0) (< to limit)
+       (not (= from to))
+       (let* ((sources (sheet-sources sheet))
+              ;; Build the whole new table before touching the old one: the
+              ;; permutation maps cells onto keys that are still in use.
+              (moved (hash-map->list
+                      (lambda (r text)
+                        (cons (relocate axis from to r)
+                              (rewrite-refs text axis from to)))
+                      sources)))
+         (hash-clear! sources)
+         (for-each (lambda (entry) (hash-set! sources (car entry) (cdr entry)))
+                   moved)
+         (invalidate-sheet! sheet)
+         #t)))
+
+(define (reference-delimiter? c)
+  (or (char-whitespace? c)
+      (memv c '(#\( #\) #\[ #\] #\" #\' #\` #\, #\;))))
+
+(define (rewrite-refs text axis from to)
+  "Rewrite every cell reference in TEXT for a move of FROM to TO along AXIS,
+leaving everything else -- spacing, comments, the shape of the code -- exactly
+as it was.
+
+A reference is any token between delimiters that name->ref accepts, which
+covers both the bare `A1' the evaluator binds as a variable and the strings in
+(cell \"A1\") and (range \"A1\" \"B2\").  Working on the text rather than on
+read data means a moved cell comes back formatted the way it was written; the
+cost is that an A1 sitting in a quoted list or an ordinary string is rewritten
+too."
+  (let ((spans (range-spans text axis from to))
+        (len (string-length text)))
+    (let loop ((i 0) (pieces '()))
+      (cond
+       ((= i len) (string-concatenate (reverse pieces)))
+       ;; A corner of a range call: already rewritten, as a pair.
+       ((assv i spans)
+        => (lambda (span)
+             (loop (cadr span) (cons (cddr span) pieces))))
+       ((reference-delimiter? (string-ref text i))
+        (loop (+ i 1) (cons (substring text i (+ i 1)) pieces)))
+       (else
+        (let ((end (let scan ((j i))
+                     (if (or (= j len) (reference-delimiter? (string-ref text j)))
+                         j
+                         (scan (+ j 1))))))
+          (loop end (cons (rewrite-token (substring text i end) axis from to)
+                          pieces))))))))
+
+(define (rewrite-token token axis from to)
+  (let ((r (name->ref token)))
+    (if r (ref->name (relocate axis from to r)) token)))
+
+(define %range-call
+  (make-regexp
+   "\\(range[[:space:]]+\"([A-Z]+[0-9]+)\"[[:space:]]+\"([A-Z]+[0-9]+)\""))
+
+(define (range-spans text axis from to)
+  "The corners of every literal (range \"A1\" \"B2\") call in TEXT, each as a
+(start end . replacement) span for rewrite-refs to substitute whole.
+
+A range is a rectangle, and the rectangle matters more than the corners that
+describe it: reordering the lines of a table is not supposed to change its
+subtotal.  So when a move begins and ends inside a range, the range keeps its
+extent and only its contents are shuffled; otherwise each corner follows its
+own cell, which is what drops a row moved out of a range and picks up one
+moved in."
+  (let loop ((start 0) (spans '()))
+    (let ((m (and (<= start (string-length text))
+                  (regexp-exec %range-call text start))))
+      (if (not m)
+          (reverse spans)
+          (let* ((a (name->ref (match:substring m 1)))
+                 (b (name->ref (match:substring m 2)))
+                 (low (min (ref-index axis a) (ref-index axis b)))
+                 (high (max (ref-index axis a) (ref-index axis b)))
+                 (within? (and (>= from low) (<= from high)
+                               (>= to low) (<= to high)))
+                 (corner (lambda (r) (if within? r (relocate axis from to r)))))
+            (loop (match:end m)
+                  (cons* (cons* (match:start m 1) (match:end m 1)
+                                (ref->name (corner a)))
+                         (cons* (match:start m 2) (match:end m 2)
+                                (ref->name (corner b)))
+                         spans)))))))
 
 
 ;;;

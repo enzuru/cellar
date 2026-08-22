@@ -223,6 +223,23 @@ so #f here is the normal answer and not an error."
   (define-action "edit-cell" '("<Control>e")
               (lambda () (edit-cell (grid-active grid))))
 
+  ;; Reordering. The model rewrites references as it moves cells, so a sheet
+  ;; means the same thing after a move as it did before; all that changes is
+  ;; where you read it.
+  (define (move-line axis delta)
+    (lambda ()
+      (unless (grid-move-line! grid axis delta)
+        (notify (if (eq? axis 'row)
+                    "The row is already at the edge of the sheet"
+                    "The column is already at the edge of the sheet")))))
+
+  (define-action "move-row-up" '("<Control><Shift>Up") (move-line 'row -1))
+  (define-action "move-row-down" '("<Control><Shift>Down") (move-line 'row 1))
+  (define-action "move-column-left" '("<Control><Shift>Left")
+              (move-line 'column -1))
+  (define-action "move-column-right" '("<Control><Shift>Right")
+              (move-line 'column 1))
+
   (define-action "save" '("<Control>s")
               (lambda ()
                 (if *path*
@@ -336,6 +353,8 @@ catch, so real failures are not silently swallowed."
     ("Double-click / Enter" . "Edit the active cell's Guile source")
     ("Ctrl+Return" . "Apply, while in the editor")
     ("Delete" . "Clear the active cell")
+    ("Ctrl+Shift+Up / Down" . "Move the active row up or down")
+    ("Ctrl+Shift+Left / Right" . "Move the active column left or right")
     ("Ctrl+R" . "Recalculate the sheet")
     ("Ctrl+O / Ctrl+S" . "Open / Save")
     ("Ctrl+Q" . "Quit")))

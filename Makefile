@@ -24,7 +24,7 @@ check:
 
 # Drives the real UI under a nested X server; needs xvfb-run, imagemagick, xdotool.
 smoke: ui
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool \
+	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
 	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-smoke.sh
 
 clean:

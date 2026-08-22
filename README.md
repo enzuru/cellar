@@ -62,6 +62,28 @@ Errors stay local: a failing cell shows `#ERR` with the message in its tooltip,
 and the rest of the sheet keeps working. Circular references are detected and
 reported as the cycle they form, e.g. `A1 -> B1 -> A1`.
 
+## Reordering rows and columns
+
+Ctrl+Shift with an arrow key picks up the active cell's whole row or column and
+moves it one place; the same four moves are in the main menu. The active cell
+rides along, so you can hold the shortcut down and walk a row to where you want
+it.
+
+A move rewrites the sheet, not just the screen. Every reference in every cell is
+put through the same permutation as the cells themselves, so `(* B2 C2)` becomes
+`(* B3 C3)` when its row slides down and a sheet means exactly what it meant
+before it was rearranged. References are rewritten in the source text, so your
+formatting, line breaks and comments come back untouched.
+
+Ranges are handled as rectangles rather than as their two corners: when both
+ends of a move are inside a range, the range keeps its extent and only the
+contents shuffle — reordering the lines of a table does not change its
+subtotal. When a row is moved out of a range it drops out of it, and a row moved
+in is picked up, which is what a spreadsheet should do. A range whose corners
+are computed rather than written down — `(range "A1" (corner-of my-table))` —
+is the case this cannot see as a rectangle; each literal reference in it still
+follows its own cell.
+
 ## Keyboard
 
 |Key                                |Action                    |
@@ -70,6 +92,8 @@ reported as the cycle they form, e.g. `A1 -> B1 -> A1`.
 |Double-click, or Enter             |Edit the active cell      |
 |Ctrl+Return                        |Apply, while in the editor|
 |Delete                             |Clear the active cell     |
+|Ctrl+Shift+Up/Down                 |Move the active row       |
+|Ctrl+Shift+Left/Right              |Move the active column    |
 |Ctrl+R                             |Recalculate               |
 |Ctrl+O / Ctrl+S / Ctrl+Shift+S     |Open / Save / Save As     |
 |Ctrl+Q                             |Quit                      |
@@ -163,9 +187,13 @@ Two things worth knowing if you extend this:
 ## What has been verified
 
 The grid, the editor, evaluation, recalculation, error display, keyboard
-navigation and the packaged `nix build` were all exercised end-to-end against a
-real GTK build, most of it by `make smoke`, which also confirms that the
-application icon resolves by application id and renders in the about dialog.
+navigation, row and column reordering, and the packaged `nix build` were all
+exercised end-to-end against a real GTK build, most of it by `make smoke`, which
+also confirms that the application icon resolves by application id and renders
+in the about dialog. Reordering was driven the same way, against
+`example.cellar`: rows and columns move, the active cell follows, the subtotal
+and tax hold their values across the move, and a move at the edge of the sheet
+says so in a toast.
 Save/Open are the exception: each link was checked separately (the async
 callback fires and returns a `GFile`, `get-path` yields a string, and the
 save/load round-trip is covered by `make check`), but the four were never driven
