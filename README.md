@@ -45,6 +45,7 @@ instance. See the note under [Notes on G-Golf](#notes-on-g-golf).
 |`(sum (range "A1" "A10"))`    |the sum of a rectangular range   |
 |`(if (> A1 100) 'over 'under)`|a symbol                         |
 |`(sort (list C1 C2 C3) <)`    |a list — all of Guile is in scope|
+|`(styled 42 #:background "red")`|`42`, on a red ground            |
 
 Bare references are bound automatically: any symbol in your code that looks like
 a cell (`A1`, `AA30`) is bound to that cell's value before your expression runs.
@@ -57,10 +58,43 @@ Alongside all of `(guile)`, cells get a few helpers:
 - `(sum …)`, `(product …)`, `(average …)` / `(avg …)`, `(count …)`,
   `(cell-min …)`, `(cell-max …)` — these flatten their arguments and skip
   empty cells, so `(sum (range "A1" "A10"))` does the obvious thing
+- `(styled value #:color … #:background …)` — the value, in colours of your
+  choosing; see [Colour](#colour)
 
 Errors stay local: a failing cell shows `#ERR` with the message in its tooltip,
 and the rest of the sheet keeps working. Circular references are detected and
 reported as the cycle they form, e.g. `A1 -> B1 -> A1`.
+
+## Colour
+
+A cell can say how it should be drawn:
+
+```scheme
+(styled (* B2 C2) #:color "#c01c28" #:background "#fff3b0")
+```
+
+Both keywords are optional, and a colour is either a hex literal (`#rgb` or
+`#rrggbb`, with or without an alpha pair) or a colour name — `"red"`, or
+`'red`. Anything else is an error in that cell, with the offending value in the
+tooltip, rather than a stylesheet quietly dropping it on the floor.
+
+The style is part of the value, which has two consequences worth knowing. The
+first is that conditional formatting is an ordinary `if`:
+
+```scheme
+(if (> D8 500) (styled D8 #:color "#c01c28") D8)
+```
+
+The second is that colour keeps itself: it is written in the cell, so it
+survives a save, a reload and a reordering exactly as the expression does,
+with nothing on the side to keep in step. It also stays out of everyone else's
+way — a cell that refers to a styled cell sees the plain value, so `(+ A1 B1)`
+and `(sum (range "A1" "A10"))` do not care whether their operands are
+coloured.
+
+One thing to watch: a background on its own leaves the text in the theme's
+colour, which under a dark theme is light. Pale fills want a `#:color` to go
+with them.
 
 ## Reordering rows and columns
 
@@ -122,6 +156,13 @@ to 10,000 rows unchanged.
 Double-click detection is a `GtkGestureClick` added to each cell's label in
 `setup` (not `bind`, which would leak a controller on every scroll); the handler
 filters on `n_press = 2`.
+
+Colour goes through the stylesheet rather than through the widgets. Each
+distinct (colour, background) pair a sheet asks for earns a generated CSS class
+in a provider of the grid's own, added to the display above the application's;
+a cell wears at most one of those classes at a time. The classes then outlive
+the cell widgets `GtkColumnView` recycles underneath them, and the palette
+stays as small as the sheet's actual use of colour.
 
 Dragging works the same way round. `GtkColumnView` can reorder its own columns,
 but that moves the view's columns and not the sheet behind them — the letters
@@ -226,7 +267,9 @@ in the about dialog. Reordering was driven the same way, against
 `example.cellar`, by keyboard and by mouse: rows and columns move, the active
 cell follows, the subtotal and tax hold their values across the move, a move at
 the edge of the sheet says so in a toast, and dragging the edge of a header
-still resizes the column instead of moving it.
+still resizes the column instead of moving it. The same run colours a cell from
+the editor, in a colour the palette has never seen, which is the case that
+reloads the grid's CSS provider while the grid is on screen.
 Save/Open are the exception: each link was checked separately (the async
 callback fires and returns a `GFile`, `get-path` yields a string, and the
 save/load round-trip is covered by `make check`), but the four were never driven

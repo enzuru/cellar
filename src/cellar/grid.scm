@@ -118,13 +118,13 @@ model exists only to give the view its row count."
 ;;;
 
 (define (setup-cell grid column cell)
+  ;; The label fills its cell -- its padding is in the stylesheet rather than
+  ;; margins here, so that a cell's background colour reaches the cell's edges.
   (let ((label (make <gtk-label>
                  #:hexpand #t
                  #:xalign (if (< column 0) 0.5 0.0)
                  #:ellipsize 'end
-                 #:single-line-mode #t
-                 #:margin-start 6
-                 #:margin-end 6)))
+                 #:single-line-mode #t)))
     (add-css-class label (if (< column 0) "cellar-gutter" "cellar-cell"))
     (set-child cell label)
     (if (< column 0)
@@ -168,7 +168,63 @@ model exists only to give the view its row count."
               (set-tooltip-text label source)))
         (if (equal? r (grid-active grid))
             (add-css-class label "cellar-active")
-            (remove-css-class label "cellar-active")))))
+            (remove-css-class label "cellar-active"))
+        (paint-style label (cell-style sheet r)))))
+
+
+;;;
+;;; Cell colours
+;;;
+
+;; A cell can ask for colours of its own -- (styled (* B2 C2) #:background
+;; "#fff3b0"). GTK has no per-widget colour to set and no supported way to give
+;; one widget a stylesheet of its own, so each distinct (colour . background)
+;; pair earns a CSS class in a provider belonging to this module. The palette
+;; is whatever the sheet actually asks for, which is a handful of entries even
+;; for a large sheet, and the classes outlive the cell widgets that GtkColumnView
+;; recycles underneath them.
+
+(define %style-prefix "cellar-style-")
+(define %palette (make-hash-table))
+(define %palette-provider #f)
+
+(define (paint-style label style)
+  "Dress LABEL in STYLE, a (colour . background) pair, or strip it when #f."
+  (for-each (lambda (class)
+              (when (string-prefix? %style-prefix class)
+                (remove-css-class label class)))
+            (get-css-classes label))
+  (when style
+    (add-css-class label (style-class style))))
+
+(define (style-class style)
+  "The CSS class that paints STYLE, defining it on first sight."
+  (or (hash-ref %palette style)
+      (let ((class (string-append %style-prefix
+                                  (number->string (hash-count (const #t) %palette)))))
+        (hash-set! %palette style class)
+        (install-palette!)
+        class)))
+
+(define (install-palette!)
+  (unless %palette-provider
+    (set! %palette-provider (make <gtk-css-provider>))
+    ;; Above the application's own stylesheet, so that a cell asking for a
+    ;; colour outranks the grid's idea of what a cell looks like.
+    (gtk-style-context-add-provider-for-display
+     (gdk-display-get-default) %palette-provider 700))
+  (load-from-string %palette-provider (palette-css)))
+
+(define (palette-css)
+  (string-join
+   (hash-map->list
+    (lambda (style class)
+      (format #f ".~a { ~a~a}"
+              class
+              (if (car style) (format #f "color: ~a; " (car style)) "")
+              (if (cdr style) (format #f "background-color: ~a; " (cdr style)) "")))
+    %palette)
+   "\n"))
 
 (define (grid-refresh! grid)
   "Repaint every realised cell. Called after the sheet changes."

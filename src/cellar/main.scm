@@ -18,7 +18,7 @@
 
 (define %css "
 .cellar-cell, .cellar-gutter {
-  padding: 2px 0;
+  padding: 2px 6px;
   border-radius: 4px;
 }
 .cellar-gutter {

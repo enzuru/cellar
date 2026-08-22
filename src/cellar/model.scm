@@ -19,6 +19,7 @@
             cell-source
             set-cell-source!
             cell-value
+            cell-style
             cell-display
             format-value
             preview-source
@@ -105,6 +106,66 @@
   (make-cell-error message)
   cell-error?
   (message cell-error-message))
+
+
+;;;
+;;; Colour
+;;;
+
+;; A cell can dress its value: (styled (* B2 C2) #:background "#fff3b0").  The
+;; style travels with the value rather than sitting in a table beside the
+;; sheet, which is what makes conditional formatting an ordinary `if', and what
+;; keeps colour through a save, a reload and a reordering -- there is nothing
+;; to keep in step, because the colour is part of the expression.
+
+(define-record-type <styled>
+  (%make-styled value color background)
+  styled?
+  (value styled-value)
+  (color styled-color)
+  (background styled-background))
+
+(define* (styled value #:key color background)
+  "The sandbox's `styled'.  Wraps VALUE in the colours it asks to be drawn in.
+Styling an already styled value merges the two, so (styled (styled x #:color
+\"red\") #:background \"yellow\") is the obvious thing."
+  (let ((color (check-color color))
+        (background (check-color background)))
+    (if (styled? value)
+        (%make-styled (styled-value value)
+                      (or color (styled-color value))
+                      (or background (styled-background value)))
+        (%make-styled value color background))))
+
+(define (unstyle value)
+  (if (styled? value) (styled-value value) value))
+
+(define (check-color color)
+  "COLOR, if it is one this program is willing to write into a stylesheet: a
+hex literal like \"#c01c28\", or a colour name like \"red\".  Anything else
+throws, so a typo shows up in the cell instead of quietly doing nothing -- and
+nothing that could carry punctuation of its own reaches the CSS."
+  (cond
+   ((not color) #f)
+   ((symbol? color) (check-color (symbol->string color)))
+   ((and (string? color) (color-literal? color)) color)
+   (else (throw 'cellar-error (format #f "styled: not a colour: ~s" color)))))
+
+(define (color-literal? text)
+  (let ((length (string-length text)))
+    (if (and (> length 0) (char=? (string-ref text 0) #\#))
+        (and (memv (- length 1) '(3 4 6 8))
+             (string-every hex-digit? text 1))
+        (and (> length 0) (string-every ascii-letter? text)))))
+
+(define (hex-digit? c)
+  (or (and (char>=? c #\0) (char<=? c #\9))
+      (let ((c (char-downcase c)))
+        (and (char>=? c #\a) (char<=? c #\f)))))
+
+(define (ascii-letter? c)
+  (let ((c (char-downcase c)))
+    (and (char>=? c #\a) (char<=? c #\z))))
 
 
 ;;;
@@ -313,7 +374,21 @@ moved in."
 (define %unset (list 'unset))
 
 (define (cell-value sheet r)
-  "The value of cell R.  Returns #f for an empty cell, or a <cell-error>.
+  "The value of cell R, without whatever style it carries.  Returns #f for an
+empty cell, or a <cell-error>."
+  (unstyle (cell-raw-value sheet r)))
+
+(define (cell-style sheet r)
+  "The (colour . background) cell R asks to be drawn in, or #f.  Either half
+of the pair can be #f on its own."
+  (let ((value (cell-raw-value sheet r)))
+    (and (styled? value)
+         (let ((color (styled-color value))
+               (background (styled-background value)))
+           (and (or color background) (cons color background))))))
+
+(define (cell-raw-value sheet r)
+  "The value of cell R as its expression left it, style and all.
 Values are memoised until the sheet is invalidated."
   (if (not (valid-ref? sheet r))
       (make-cell-error (format #f "reference out of range"))
@@ -481,6 +556,7 @@ plus the sheet-aware helpers below."
     (for-each (lambda (binding)
                 (module-define! module (car binding) (cdr binding)))
               `((%cellar-lookup . ,lookup)
+                (styled . ,styled)
                 (cell . ,cell-ref)
                 (range . ,range)
                 (sum . ,sum)

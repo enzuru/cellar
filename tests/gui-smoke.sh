@@ -104,16 +104,27 @@ for x in 300 330 350; do xdotool mousemove $x 111; sleep 0.3; done
 xdotool mouseup 1; sleep 2
 shot 14-resized
 
+# A cell that colours itself. This is also the one step that exercises adding a
+# colour the palette has never seen, which reloads the grid's CSS provider
+# while the grid is on screen.
+echo "8. a cell that colours itself"
+xdotool mousemove 220 189 click --repeat 2 --delay 60 1; sleep 4
+xdotool key ctrl+a; sleep 1
+xdotool type --delay 30 '(styled 1234 #:color "#ffffff" #:background "#3584e4")'
+sleep 2
+xdotool key ctrl+Return; sleep 4
+shot 15-coloured
+
 # The application icon, resolved by application id out of data/icons. The menu
 # button is at 957 -- 1070 is the close button, which quits the app instead.
-echo "8. about dialog"
+echo "9. about dialog"
 xdotool mousemove 957 27 click 1; sleep 3
-shot 15-menu
+shot 16-menu
 # Click "About Cellar" by position. Never press Return here: the highlighted
 # item is "Open...", and that summons the portal file chooser onto your real
 # desktop.
 xdotool mousemove 907 429 click 1; sleep 4
-shot 16-about
+shot 17-about
 xdotool key Escape; sleep 2
 
 echo

@@ -73,6 +73,46 @@
 (put! "H1" "'(A1 B1)")
 (check "quote intact" "(A1 B1)" (shown "H1"))
 
+(format #t "-- colour~%")
+(let ((r (make-sheet 8 3)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (shown name) (cell-display r (name->ref name)))
+  (define (style name) (cell-style r (name->ref name)))
+  (put! "A1" "(styled 42 #:color \"#c01c28\" #:background \"#fff3b0\")")
+  (put! "A2" "(+ A1 1)")
+  (put! "A3" "(styled (sum (range \"A1\" \"A2\")) #:background \"yellow\")")
+  (put! "B1" "(styled (styled 7 #:color 'red) #:background \"yellow\")")
+  (put! "B2" "(if (> A1 10) (styled A1 #:background \"#3584e4\") A1)")
+  (put! "B3" "(styled 1 #:color \"red; } * { color: green\")")
+  (put! "C1" "(styled 2 #:color \"#12345\")")
+  (put! "C2" "7")
+
+  (check "a styled cell shows its value" "42" (shown "A1"))
+  (check "and carries its colours" '("#c01c28" . "#fff3b0") (style "A1"))
+  (check "a reference to it is just the value" "43" (shown "A2"))
+  (check "so are the helpers" "85" (shown "A3"))
+  (check "half a style is a style" '(#f . "yellow") (style "A3"))
+  (check "styling a styled value merges the two" '("red" . "yellow") (style "B1"))
+  (check "a colour can be a symbol" "7" (shown "B1"))
+  (check "conditional formatting is an ordinary if"
+         '(#f . "#3584e4") (style "B2"))
+  (check "an unstyled cell has no style" #f (style "C2"))
+
+  (check "a colour that is not one is an error" "#ERR" (shown "B3"))
+  (format #t "       message: ~a~%"
+          (cell-error-message (cell-value r (name->ref "B3"))))
+  (check "and so is a malformed hex literal" "#ERR" (shown "C1"))
+
+  ;; The style is part of the expression, so everything that moves the
+  ;; expression moves the style with it, for free.
+  (let ((copy (make-sheet 8 3)))
+    (alist->sheet! copy (sheet->alist r))
+    (check "colour survives a save and a load"
+           '("#c01c28" . "#fff3b0") (cell-style copy (name->ref "A1"))))
+  (move-row! r 0 2)
+  (check "colour follows a moved row" '("#c01c28" . "#fff3b0") (style "A3"))
+  (check "and the value with it" "42" (shown "A3")))
+
 (format #t "-- persistence~%")
 (let ((saved (sheet->alist s))
       (s2 (make-sheet 100 26)))
