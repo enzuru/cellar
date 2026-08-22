@@ -37,9 +37,9 @@
 
 (format #t "-- helpers~%")
 (put! "C1" "1") (put! "C2" "2") (put! "C3" "3")
-(put! "C4" "(sum (range \"C1\" \"C3\"))")
-(put! "C5" "(average (range \"C1\" \"C3\"))")
-(put! "C6" "(cell \"C4\")")
+(put! "C4" "(sum (range 'C1 'C3))")
+(put! "C5" "(average (range 'C1 'C3))")
+(put! "C6" "(cell 'C4)")
 (check "sum range" "6" (shown "C4"))
 (check "average" "2" (shown "C5"))
 (check "cell fn" "6" (shown "C6"))
@@ -47,9 +47,9 @@
 (format #t "-- empty cells~%")
 (put! "D1" "")
 (check "empty shows blank" "" (shown "D1"))
-(put! "D6" "(sum (range \"D1\" \"D5\"))")
+(put! "D6" "(sum (range 'D1 'D5))")
 (check "empty counts as 0" "0" (shown "D6"))
-(put! "D2" "(sum (range \"D1\" \"D5\"))")
+(put! "D2" "(sum (range 'D1 'D5))")
 (check "range containing self is a cycle" "#ERR" (shown "D2"))
 
 (format #t "-- errors~%")
@@ -80,7 +80,7 @@
   (define (style name) (cell-style r (name->ref name)))
   (put! "A1" "(styled 42 #:color \"#c01c28\" #:background \"#fff3b0\")")
   (put! "A2" "(+ A1 1)")
-  (put! "A3" "(styled (sum (range \"A1\" \"A2\")) #:background \"yellow\")")
+  (put! "A3" "(styled (sum (range 'A1 'A2)) #:background \"yellow\")")
   (put! "B1" "(styled (styled 7 #:color 'red) #:background \"yellow\")")
   (put! "B2" "(if (> A1 10) (styled A1 #:background \"#3584e4\") A1)")
   (put! "B3" "(styled 1 #:color \"red; } * { color: green\")")
@@ -129,7 +129,7 @@
   (put! "A2" "2")
   (put! "A3" "3")
   (put! "B1" "(* A1 10)")
-  (put! "B3" "(sum (range \"A1\" \"A2\"))")
+  (put! "B3" "(sum (range 'A1 'A2))")
   (put! "C1" "(list 'A1 my-A1)")
 
   (check "move-row! reports the move" #t (move-row! r 2 0))
@@ -138,7 +138,7 @@
   (check "cells move with their row" "(* A2 10)" (src "B2"))
   (check "references follow the cells they name" "10" (shown-in "B2"))
   (check "range endpoints are rewritten too"
-         "(sum (range \"A2\" \"A3\"))" (src "B1"))
+         "(sum (range 'A2 'A3))" (src "B1"))
   (check "a moved range still covers the same cells" "3" (shown-in "B1"))
   (check "quoted refs move too, tokens that merely contain one do not"
          "(list 'A2 my-A1)" (src "C2"))
@@ -163,21 +163,38 @@
   (put! "A1" "1")
   (put! "A2" "2")
   (put! "A3" "3")
-  (put! "B4" "(sum (range \"A1\" \"A3\"))")
+  (put! "B4" "(sum (range 'A1 'A3))")
   (check "the range sums three cells to begin with" "6" (shown-in "B4"))
 
   (move-row! r 2 0)
   (check "a move inside a range leaves its corners alone"
-         "(sum (range \"A1\" \"A3\"))" (src "B4"))
+         "(sum (range 'A1 'A3))" (src "B4"))
   (check "so the subtotal survives the reordering" "6" (shown-in "B4"))
   (check "while the cells themselves did move" "3" (src "A1"))
 
   ;; Row 1 (the 1) out to the bottom: it leaves the range behind.
   (move-row! r 1 7)
   (check "a row moved out of a range drops out of it"
-         "(sum (range \"A1\" \"A2\"))" (src "B3"))
+         "(sum (range 'A1 'A2))" (src "B3"))
   (check "and the subtotal follows" "5" (shown-in "B3"))
   (check "the row itself is still on the sheet" "1" (src "A8")))
+
+;; A reference has one spelling, and a string is not it.
+(let ((r (make-sheet 8 2)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (shown-in name) (cell-display r (name->ref name)))
+  (define (message name) (cell-error-message (cell-value r (name->ref name))))
+  (put! "A1" "1")
+  (put! "A2" "2")
+  (put! "B1" "(cell \"A1\")")
+  (put! "B2" "(sum (range \"A1\" \"A2\"))")
+
+  (check "a string is not a reference to cell" "#ERR" (shown-in "B1"))
+  (check "and says how to write one"
+         "cell: write the reference as a symbol, 'A1" (message "B1"))
+  (check "nor to range" "#ERR" (shown-in "B2"))
+  (check "which says the same"
+         "range: write the reference as a symbol, 'A1" (message "B2")))
 
 (format #t "~%~a~%" (if (zero? failures) "ALL TESTS PASSED" (format #f "~a FAILURE(S)" failures)))
 (exit (if (zero? failures) 0 1))

@@ -305,11 +305,11 @@ leaving everything else -- spacing, comments, the shape of the code -- exactly
 as it was.
 
 A reference is any token between delimiters that name->ref accepts, which
-covers both the bare `A1' the evaluator binds as a variable and the strings in
-(cell \"A1\") and (range \"A1\" \"B2\").  Working on the text rather than on
-read data means a moved cell comes back formatted the way it was written; the
-cost is that an A1 sitting in a quoted list or an ordinary string is rewritten
-too."
+covers both the bare `A1' the evaluator binds as a variable and the quoted
+`'A1' that (cell 'A1) and (range 'A1 'B2) are handed.  Working on the text
+rather than on read data means a moved cell comes back formatted the way it
+was written; the cost is that an A1 sitting in a quoted list or an ordinary
+string is rewritten too."
   (let ((spans (range-spans text axis from to))
         (len (string-length text)))
     (let loop ((i 0) (pieces '()))
@@ -335,10 +335,10 @@ too."
 
 (define %range-call
   (make-regexp
-   "\\(range[[:space:]]+\"([A-Z]+[0-9]+)\"[[:space:]]+\"([A-Z]+[0-9]+)\""))
+   "\\(range[[:space:]]+'([A-Z]+[0-9]+)[[:space:]]+'([A-Z]+[0-9]+)"))
 
 (define (range-spans text axis from to)
-  "The corners of every literal (range \"A1\" \"B2\") call in TEXT, each as a
+  "The corners of every literal (range 'A1 'B2) call in TEXT, each as a
 (start end . replacement) span for rewrite-refs to substitute whole.
 
 A range is a rectangle, and the rectangle matters more than the corners that
@@ -508,12 +508,19 @@ plus the sheet-aware helpers below."
             (else (throw 'cellar-error
                          (format #f "~a: expected a number, got ~s" name value)))))
 
+    ;; A reference is written as a quoted symbol: 'A1, not "A1".  Having one
+    ;; spelling keeps a string in a cell nothing but text, and means a move can
+    ;; be trusted to find every reference it has to rewrite.
     (define (resolve who r)
       (let ((parsed (cond ((pair? r) r)
-                          ((or (string? r) (symbol? r)) (name->ref r))
+                          ((symbol? r) (name->ref r))
                           (else #f))))
-        (or (and parsed (valid-ref? sheet parsed) parsed)
-            (throw 'cellar-error (format #f "~a: bad reference ~s" who r)))))
+        (cond ((and parsed (valid-ref? sheet parsed)) parsed)
+              ((string? r)
+               (throw 'cellar-error
+                      (format #f "~a: write the reference as a symbol, '~a" who r)))
+              (else
+               (throw 'cellar-error (format #f "~a: bad reference ~s" who r))))))
 
     (define (cell-ref r) (lookup (resolve "cell" r)))
 

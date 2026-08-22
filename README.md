@@ -42,7 +42,7 @@ instance. See the note under [Notes on G-Golf](#notes-on-g-golf).
 |`(* 6 7)`                     |`42`                             |
 |`(+ A1 A2)`                   |the sum of two other cells       |
 |`(string-upcase "hello")`     |`HELLO`                          |
-|`(sum (range "A1" "A10"))`    |the sum of a rectangular range   |
+|`(sum (range 'A1 'A10))`      |the sum of a rectangular range   |
 |`(if (> A1 100) 'over 'under)`|a symbol                         |
 |`(sort (list C1 C2 C3) <)`    |a list — all of Guile is in scope|
 |`(styled 42 #:background "red")`|`42`, on a red ground            |
@@ -51,13 +51,18 @@ Bare references are bound automatically: any symbol in your code that looks like
 a cell (`A1`, `AA30`) is bound to that cell's value before your expression runs.
 Quoted data is untouched, so `'(A1 B1)` is still a list of two symbols.
 
+Where a helper needs the cell rather than its value, quote it: `'A1`. That is
+the one way to write a reference — a string is only ever text — so a reference
+is always recognisable, and moving a row rewrites every one of them. A computed
+reference has to arrive as a symbol too, by way of `string->symbol`.
+
 Alongside all of `(guile)`, cells get a few helpers:
 
-- `(cell "A1")` — a cell's value, when you need to compute the name
-- `(range "A1" "B10")` — a flat list of values over a rectangle
+- `(cell 'A1)` — a cell's value, when you need to compute which cell
+- `(range 'A1 'B10)` — a flat list of values over a rectangle
 - `(sum …)`, `(product …)`, `(average …)` / `(avg …)`, `(count …)`,
   `(cell-min …)`, `(cell-max …)` — these flatten their arguments and skip
-  empty cells, so `(sum (range "A1" "A10"))` does the obvious thing
+  empty cells, so `(sum (range 'A1 'A10))` does the obvious thing
 - `(styled value #:color … #:background …)` — the value, in colours of your
   choosing; see [Colour](#colour)
 
@@ -89,7 +94,7 @@ The second is that colour keeps itself: it is written in the cell, so it
 survives a save, a reload and a reordering exactly as the expression does,
 with nothing on the side to keep in step. It also stays out of everyone else's
 way — a cell that refers to a styled cell sees the plain value, so `(+ A1 B1)`
-and `(sum (range "A1" "A10"))` do not care whether their operands are
+and `(sum (range 'A1 'A10))` do not care whether their operands are
 coloured.
 
 One thing to watch: a background on its own leaves the text in the theme's
@@ -118,7 +123,7 @@ ends of a move are inside a range, the range keeps its extent and only the
 contents shuffle — reordering the lines of a table does not change its
 subtotal. When a row is moved out of a range it drops out of it, and a row moved
 in is picked up, which is what a spreadsheet should do. A range whose corners
-are computed rather than written down — `(range "A1" (corner-of my-table))` —
+are computed rather than written down — `(range 'A1 (corner-of my-table))` —
 is the case this cannot see as a rectangle; each literal reference in it still
 follows its own cell.
 
