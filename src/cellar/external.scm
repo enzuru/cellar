@@ -1,109 +1,55 @@
 ;;; Cellar -- handing a cell to an external editor.
 ;;;
-;;; The cell's source goes into a file of its own, the configured command is
-;;; started on it, and when that command exits the file comes back as the cell.
-;;; The wait is asynchronous, so the sheet stays usable while an editor is open
-;;; and several cells can be out with editors at the same time.
+;;; A cell is a file in the sheet folder, so there is nothing to hand over but
+;;; its path: the editor opens cells/B2.scm, and saving in the editor saves the
+;;; cell.  Cellar does not wait for the editor to exit and does not read
+;;; anything back -- the sheet folder is watched, so the grid catches up with
+;;; each save on its own, with the editor still open.
+;;;
+;;; This is why an external editor no longer has to be told to wait.  An
+;;; earlier version copied the cell to a temporary file and read it back when
+;;; the editor exited, which meant `code' or `gedit' had to be run with
+;;; --wait or the edit was lost.  Now the file is the cell.
 
 (define-module (cellar external)
   #:use-module (oop goops)
   #:use-module (g-golf)
-  #:use-module (ice-9 textual-ports)
   #:use-module (cellar gi)
   #:use-module (cellar config)
   #:use-module (cellar model)
+  #:use-module (cellar store)
   #:duplicates (merge-generics replace warn-override-core warn last)
   #:export (open-external-editor))
 
-;; Editors that are still open. A pending job holds the GSubprocess and the
-;; callback that is waiting on it, so neither can be collected while the user is
-;; still typing in another window.
-(define *pending* '())
+;; Editors still running.  Nothing is waiting on them, but a GSubprocess that
+;; nothing holds is a GSubprocess that may be collected out from under the
+;; running program, so they are kept until they exit.
+(define *running* '())
 
-(define (open-external-editor command sheet r on-apply on-error)
-  "Edit cell R with COMMAND. ON-APPLY is called with the file's contents once
-the editor exits cleanly; ON-ERROR is called with a message if the editor cannot
-be started or exits badly. Returns #t if the editor started, #f if the caller
-should fall back to the built-in one."
-  (let* ((directory (make-temporary-directory))
-         (path (and directory
-                    (string-append directory "/" (ref->name r) ".scm")))
-         (argv (and path (editor-argv command path))))
-    (cond
-     ((not path)
-      (on-error "Could not make a temporary file for the external editor")
-      #f)
-     ((null? argv)
-      (discard directory)
-      (on-error "The external editor command is empty")
-      #f)
-     (else
-      (catch #t
-        (lambda ()
-          (call-with-output-file path
-            (lambda (port) (display (or (cell-source sheet r) "") port))))
-        (lambda arguments #f))
-      (start argv directory path on-apply on-error)))))
+(define (open-external-editor command directory r on-error)
+  "Open cell R of the sheet at DIRECTORY with COMMAND.  Returns #t if the
+editor started, #f -- having called ON-ERROR with a message -- if it could not,
+so the caller can fall back to the built-in editor.
 
-(define (start argv directory path on-apply on-error)
-  (catch #t
-    (lambda ()
-      (let* ((process (g-subprocess-new argv '()))
-             (job #f))
-        (define (done ok?)
-          (set! *pending* (delq! job *pending*))
-          (let ((text (and ok? (read-back path))))
-            (discard directory)
-            (cond (text (on-apply text))
-                  (ok? (on-error "The external editor left no file behind"))
-                  (else (on-error "The external editor did not finish cleanly; the cell is unchanged")))))
-        (set! job (cons process
-                        (lambda (source result data)
-                          (done (catch #t
-                                  (lambda ()
-                                    (g-subprocess-wait-check-finish source result))
-                                  (lambda arguments #f))))))
-        (set! *pending* (cons job *pending*))
-        (g-subprocess-wait-check-async process #f (cdr job) #f)
-        #t))
-    (lambda arguments
-      ;; The usual cause is a command that is not on PATH. Say so and let the
-      ;; caller fall back rather than leaving the cell uneditable.
-      (discard directory)
-      (on-error (format #f "Could not start ~a" (car argv)))
-      #f)))
-
-(define (read-back path)
-  "The contents of PATH, or #f if it is gone -- an editor that deleted the file
-is telling us the edit was abandoned."
-  (catch #t
-    (lambda ()
-      (and (file-exists? path)
-           (call-with-input-file path get-string-all)))
-    (lambda arguments #f)))
-
-(define (make-temporary-directory)
-  "A directory of our own under TMPDIR, so the file inside it can be named after
-the cell -- `A1.scm', which an editor will highlight as Scheme."
-  (catch #t
-    (lambda ()
-      (mkdtemp (string-append (or (getenv "TMPDIR") "/tmp") "/cellar-XXXXXX")))
-    (lambda arguments #f)))
-
-(define (discard directory)
-  (when directory
-    (catch #t
-      (lambda ()
-        (for-each (lambda (entry)
-                    (delete-file (string-append directory "/" entry)))
-                  (scandir* directory))
-        (rmdir directory))
-      (lambda arguments #f))))
-
-(define (scandir* directory)
-  (let ((stream (opendir directory)))
-    (let loop ((entry (readdir stream)) (entries '()))
-      (cond ((eof-object? entry) (closedir stream) entries)
-            ((or (string=? entry ".") (string=? entry ".."))
-             (loop (readdir stream) entries))
-            (else (loop (readdir stream) (cons entry entries)))))))
+Nothing is applied here.  The editor writes the cell's own file, and the sheet
+watcher is what notices."
+  (let* ((path (cell-file-path directory (ref->name r)))
+         (argv (editor-argv command path)))
+    (if (null? argv)
+        (begin (on-error "The external editor command is empty") #f)
+        (catch #t
+          (lambda ()
+            (let ((process (g-subprocess-new argv '())))
+              (set! *running* (cons process *running*))
+              (g-subprocess-wait-async
+               process #f
+               (lambda (source result data)
+                 (set! *running* (delq! process *running*)))
+               #f)
+              #t))
+          (lambda arguments
+            ;; Nearly always a command that is not on PATH.  Say which, and let
+            ;; the caller open the built-in editor rather than leaving a cell
+            ;; that cannot be edited at all.
+            (on-error (format #f "Could not start ~a" (car argv)))
+            #f)))))

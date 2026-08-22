@@ -14,6 +14,15 @@
 #
 # Screenshots land in ${OUT:-/tmp/cellar-start-smoke}.
 #
+# KNOWN ISSUE: from step 3 on, this suite does not currently drive every
+# machine. Where it fails, the cell editor opens but never receives what
+# xdotool types, so the edit -- and every keystroke after it, the modal dialog
+# swallowing them -- does nothing. It fails identically on the commit before
+# per-cell saving was added, so it is the harness meeting this environment and
+# not the application: gui-smoke.sh covers the same editing paths and passes.
+# Opening the editor with Return rather than a double-click was seen to work
+# where the double-click did not, which is the thread to pull on next.
+#
 # WARNING: do not add a step that clicks "Open Sheet…" or the location button
 # in the New Sheet dialog. Both hand off to the XDG desktop portal, whose
 # window appears on your REAL desktop and cannot be scripted from here. Every
@@ -63,7 +72,7 @@ xdotool type --delay 30 'budget'
 sleep 1
 shot 3-named
 # "Create" is the suggested response, on the right.
-xdotool key Return; sleep 4
+xdotool key Return; sleep 7
 shot 4-created
 
 expect "the sheet folder was made" test -d "$HOME/budget.cellar"
@@ -71,15 +80,14 @@ expect "with a primary file" test -f "$HOME/budget.cellar/sheet.scm"
 expect "and somewhere for the cells" test -d "$HOME/budget.cellar/cells"
 expect "and a git repository, since the box was ticked" test -d "$HOME/budget.cellar/.git"
 
-# A cell, written the ordinary way, and saved.
-echo "3. write a cell and save it"
+# A cell, written the ordinary way. Nothing is saved afterwards, because there
+# is nothing to save: applying the edit is what put it on disk.
+echo "3. write a cell, and find it on disk without saving anything"
 xdotool mousemove 220 164 click --repeat 2 --delay 60 1; sleep 4
 xdotool type --delay 30 '(* 6 7)'
 sleep 2
 xdotool key ctrl+Return; sleep 3
 shot 5-cell-written
-xdotool key ctrl+s; sleep 3
-shot 6-saved
 
 expect "the cell is a file of its own" test -f "$HOME/budget.cellar/cells/B2.scm"
 expect "holding its source" contains "$HOME/budget.cellar/cells/B2.scm" '(\* 6 7)'
@@ -87,18 +95,32 @@ expect "and no file for a cell that holds nothing" test ! -f "$HOME/budget.cella
 expect "the primary file knows the size" contains "$HOME/budget.cellar/sheet.scm" 'rows . 100'
 expect "and has a place for column widths" contains "$HOME/budget.cellar/sheet.scm" 'widths'
 
-# Inserting a row grows the sheet, and that has to survive the save.
-echo "4. a grown sheet is saved grown"
-xdotool key ctrl+alt+Down; sleep 2
-xdotool key ctrl+s; sleep 3
+# Inserting a row changes the shape of the sheet, which is the primary file's
+# business rather than any cell's, and it reaches disk on its own too.
+echo "4. a grown sheet is grown on disk"
+xdotool key ctrl+alt+Down; sleep 3
 expect "the sheet is a row taller on disk" contains "$HOME/budget.cellar/sheet.scm" 'rows . 101'
 
-# A scratch sheet has nowhere to live until it is saved.
-echo "5. a scratch sheet"
-xdotool key ctrl+shift+n; sleep 3
+# Ctrl+S has nothing left to do, and says so rather than doing nothing quietly.
+echo "5. Ctrl+S explains itself"
+xdotool key ctrl+s; sleep 2
+shot 6-ctrl-s
+
+# A scratch sheet lives in a folder of Cellar's choosing, so it saves itself
+# from the first keystroke like any other sheet.
+echo "6. a scratch sheet"
+xdotool key ctrl+shift+n; sleep 4
 shot 7-scratch
-xdotool key ctrl+s; sleep 3
-shot 8-scratch-save-asks
+xdotool mousemove 220 164 click --repeat 2 --delay 60 1; sleep 4
+xdotool type --delay 30 '(+ 40 2)'
+sleep 2
+xdotool key ctrl+Return; sleep 4
+shot 8-scratch-written
+
+SCRATCH="$HOME/.local/share/cellar/scratch"
+expect "the scratch sheet was given a folder" test -d "$SCRATCH"
+expect "and its cell is on disk, unasked" \
+  bash -c 'grep -rq "40 2" "$1"/*/cells' _ "$SCRATCH"
 
 echo
 echo "app log (excluding harmless environment noise):"

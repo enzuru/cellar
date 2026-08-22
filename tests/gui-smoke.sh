@@ -55,9 +55,13 @@ echo "2. keyboard navigation"
 xdotool key Right Right Down; sleep 2
 shot 2-navigated
 
-# Enter opens the editor on the active cell.
+# Enter opens the editor on the active cell. The wait here and at every other
+# editor-opening step is deliberately generous: building the dialog loads
+# GtkSourceView's language and style scheme, and under Xvfb that has been seen
+# to outlast a shorter one -- after which the keys below go to the grid behind
+# the dialog and the step quietly does nothing.
 echo "3. editor"
-xdotool key Return; sleep 4
+xdotool key Return; sleep 7
 shot 3-editor
 
 # Type a new expression and watch the live result, then apply with Ctrl+Return.
@@ -71,7 +75,7 @@ shot 5-applied
 
 # An error cell should show #ERR without disturbing the rest of the sheet.
 echo "5. error cell"
-xdotool mousemove 530 139 click --repeat 2 --delay 60 1; sleep 4
+xdotool mousemove 530 139 click --repeat 2 --delay 60 1; sleep 7
 xdotool key ctrl+a; sleep 1
 xdotool type --delay 30 '(/ 1 0)'; sleep 2
 xdotool key ctrl+Return; sleep 4
@@ -119,7 +123,7 @@ shot 14-resized
 # colour the palette has never seen, which reloads the grid's CSS provider
 # while the grid is on screen.
 echo "8. a cell that colours itself"
-xdotool mousemove 220 189 click --repeat 2 --delay 60 1; sleep 4
+xdotool mousemove 220 189 click --repeat 2 --delay 60 1; sleep 7
 xdotool key ctrl+a; sleep 1
 xdotool type --delay 30 '(styled 1234 #:color "#ffffff" #:background "#3584e4")'
 sleep 2
@@ -180,11 +184,11 @@ xdotool mousemove 907 675 click 1; sleep 4
 shot 26-about
 xdotool key Escape; sleep 2
 
-# Saving. A sheet is a folder of one file per cell, so what a save did is
-# something this script can read rather than photograph.
-echo "12. save the sheet"
-xdotool key ctrl+s; sleep 3
-shot 27-saved
+# What is on disk. Nothing is saved here: every step above wrote itself as it
+# happened, so the folder already is the sheet. A sheet being a folder of one
+# file per cell, that is something this script can read rather than photograph.
+echo "12. the folder, which nobody saved"
+shot 27-on-disk
 
 failures=0
 expect () {
@@ -222,14 +226,23 @@ sleep 2
 shot 28-preferences
 xdotool key Escape; sleep 3
 
-# Now Enter on a cell runs that script instead of opening Cellar's editor, and
-# what the script leaves in the file becomes the cell. Saving again puts that
-# where this script can read it, whichever cell the run has left active.
+# Now Enter on a cell hands that script the cell's own file, and what the script
+# writes there is the cell. Nothing is read back and nothing waits for the
+# script to exit: the folder is watched, and that is how the edit arrives.
 xdotool mousemove 220 164 click 1; sleep 2
 xdotool key Return; sleep 8
 shot 29-external-editor-applied
-xdotool key ctrl+s; sleep 3
-expect "the external editor's work reached the sheet" \
+expect "the external editor wrote the cell's own file" \
+  grep -rq '(\* 111 2)' "$SHEET/cells"
+
+# That much only proves the script can write. The proof that Cellar *noticed*
+# is to make Cellar write the whole sheet back out from what it holds in
+# memory: inserting a row renames every cell file below it from the model. If
+# the watcher had missed the edit, the stale model would overwrite it here and
+# the expression would be gone.
+xdotool key ctrl+alt+Down; sleep 4
+shot 30-after-reload-and-insert
+expect "and Cellar took it in, rather than overwriting it from a stale model" \
   grep -rq '(\* 111 2)' "$SHEET/cells"
 
 echo

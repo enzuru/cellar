@@ -164,6 +164,89 @@
            (lambda () (load-sheet! (make-sheet 4 2) path) 'no-error)
            (lambda (key . args) key))))
 
+(format #t "-- saving one cell at a time~%")
+(let ((path (fresh "percell.cellar")))
+  (create-sheet-directory! path #f)
+  (save-cell! path "B2" "(* 6 7)")
+  (check "a cell written by itself is a file of its own" #t
+         (file-exists? (in path "cells" "B2.scm")))
+  (check "holding its source" "(* 6 7)"
+         (assoc-ref (read-sheet-cells path) "B2"))
+  (save-cell! path "B2" "99")
+  (check "writing it again replaces it" "99"
+         (assoc-ref (read-sheet-cells path) "B2"))
+  ;; An empty cell is a cell with no file, so emptying one has to take the file
+  ;; away rather than leave an empty one behind.
+  (save-cell! path "B2" "")
+  (check "emptying a cell removes its file" #f
+         (file-exists? (in path "cells" "B2.scm")))
+  (check "and it is gone from the sheet on disk" '() (read-sheet-cells path))
+  (save-cell! path "C3" "   ")
+  (check "a cell of nothing but spaces never gets a file" #f
+         (file-exists? (in path "cells" "C3.scm")))
+  (save-cell! path "D4" "1")
+  (check "emptying a cell that has no file is not an error" #f
+         (begin (save-cell! path "Z9" "") (file-exists? (in path "cells" "Z9.scm")))))
+
+(format #t "-- reading the sheet back without disturbing it~%")
+(let ((path (fresh "reading.cellar")))
+  (create-sheet-directory! path #f)
+  (save-cell! path "A1" "1")
+  (save-cell! path "A10" "10")
+  (save-cell! path "A2" "2")
+  ;; Sorted, so that two readings of an unchanged folder compare equal -- which
+  ;; is what lets the watcher tell Cellar's own writes from everyone else's.
+  (check "the cells come back sorted by name"
+         '("A1" "A10" "A2") (map car (read-sheet-cells path)))
+  (check "and reading twice gives the same thing"
+         (read-sheet-cells path) (read-sheet-cells path))
+  (write-sheet-metadata! path 120 30 '((1 . 181)))
+  (let ((metadata (read-sheet-metadata path)))
+    (check "the size is written" 120 (assq-ref metadata 'rows))
+    (check "and the columns" 30 (assq-ref metadata 'columns))
+    (check "and the widths" '((1 . 181)) (assq-ref metadata 'widths)))
+  (check "writing the primary file leaves the cells alone"
+         '("A1" "A10" "A2") (map car (read-sheet-cells path))))
+
+(format #t "-- files that are not changing are not touched~%")
+(let ((path (fresh "quiet.cellar")))
+  (create-sheet-directory! path #f)
+  (save-cell! path "A1" "1")
+  (save-cell! path "A2" "2")
+  (let ((sheet (make-sheet 4 2)))
+    (load-sheet! sheet path)
+    ;; Save once so that the files already say what the sheet says, then again
+    ;; and see that the second save touched nothing.
+    (save-sheet! sheet path '())
+    (let ((cell (stat:mtime (stat (in path "cells" "A1.scm"))))
+          (primary (stat:mtime (stat (in path "sheet.scm")))))
+      (sleep 1)
+      (save-sheet! sheet path '())
+      (check "a whole-sheet save leaves an unchanged cell's mtime alone"
+             cell (stat:mtime (stat (in path "cells" "A1.scm"))))
+      (check "and the primary file's, when the shape did not change"
+             primary (stat:mtime (stat (in path "sheet.scm"))))
+      ;; A file that is changing is still written, mtime and all.
+      (save-cell! path "A1" "changed")
+      (check "a cell whose source did change is written"
+             "changed" (assoc-ref (read-sheet-cells path) "A1"))
+      (check "and its mtime moves" #t
+             (> (stat:mtime (stat (in path "cells" "A1.scm"))) cell)))))
+
+(format #t "-- making a directory and everything above it~%")
+(let ((deep (in (fresh "deep") "a" "b" "c")))
+  (make-directories! deep)
+  (check "the whole chain is made" #t (file-exists? deep))
+  (make-directories! deep)
+  (check "and making it again is not an error" #t (file-exists? deep)))
+
+(format #t "-- where a cell's file is~%")
+(let ((path (fresh "paths.cellar")))
+  (check "a cell's path is under cells/, named for the cell"
+         (in path "cells" "B2.scm") (cell-file-path path "B2"))
+  (check "and is answered for a cell that has no file yet" #t
+         (string? (cell-file-path path "Z99"))))
+
 (remove-tree root)
 
 (format #t "~%~a~%" (if (zero? failures) "ALL TESTS PASSED"

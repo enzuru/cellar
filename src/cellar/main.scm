@@ -11,6 +11,7 @@
   #:use-module (cellar external)
   #:use-module (cellar config)
   #:use-module (cellar preferences)
+  #:use-module (cellar watch)
   #:use-module (ice-9 match)
   #:use-module (ice-9 string-fun)
   #:duplicates (merge-generics replace warn-override-core warn last)
@@ -61,9 +62,17 @@ columnview.data-table > header > button {
 }
 ")
 
-;; The path of the sheet being edited, or #f for an unsaved one. The only
-;; mutable application state that is not the sheet itself.
+;; The folder of the sheet being edited, or #f when no sheet is open.  A sheet
+;; always has one now: every edit is written to it as it is made, so there is no
+;; such thing as a sheet that is not on disk.
 (define *path* #f)
+
+;; True when that folder is one Cellar made to hold a scratch sheet, which
+;; changes nothing but what the title bar calls it.
+(define *scratch?* #f)
+
+;; The GFileMonitor over the open sheet, or #f.
+(define *watcher* #f)
 
 
 ;;;
@@ -122,8 +131,8 @@ columnview.data-table > header > button {
 
       (define (retitle)
         (set-subtitle window-title
-                      (cond (*path* (sheet-name *path*))
-                            ((sheet-showing?) "Unsaved")
+                      (cond (*scratch?* "Scratch")
+                            (*path* (sheet-name *path*))
                             (else "No sheet open"))))
 
       (define (show-start-page)
@@ -154,9 +163,47 @@ columnview.data-table > header > button {
                            "empty — double-click a cell to write Guile")
                 (add-css-class source-label "dim-label")))))
 
+      ;;
+      ;; Saving.  There is no command for it: a cell is written the moment it
+      ;; is changed, so the folder on disk is what the sheet is rather than a
+      ;; copy of it taken when you remembered to ask.
+      ;;
+
+      (define (persist-cell! r)
+        "Write one cell to its own file."
+        (when *path*
+          (catch #t
+            (lambda () (save-cell! *path* (ref->name r) (cell-source sheet r)))
+            (lambda (key . args)
+              (report-failure (format #f "save ~a" (ref->name r)) key args)))))
+
+      (define (persist-layout!)
+        "Write the size of the sheet and its column widths."
+        (when (and *path* grid)
+          (catch #t
+            (lambda ()
+              (write-sheet-metadata! *path* (sheet-rows sheet)
+                                     (sheet-columns sheet)
+                                     (grid-column-widths grid)))
+            (lambda (key . args) (report-failure "save the sheet" key args)))))
+
+      (define (persist-cells!)
+        "Write every cell.  Moving a row or inserting a column renames the files
+of every cell it shifted, so the cheapest correct answer for those is to write
+the lot -- it is a few dozen small files, and it deletes the ones left behind."
+        (when (and *path* grid)
+          (catch #t
+            (lambda ()
+              (save-sheet! sheet *path* (grid-column-widths grid)))
+            (lambda (key . args) (report-failure "save the sheet" key args)))))
+
+      (define (on-grid-change what)
+        (if (eq? what 'layout) (persist-layout!) (persist-cells!)))
+
       (define (apply-edit r)
         (lambda (text)
           (set-cell-source! sheet r text)
+          (persist-cell! r)
           (grid-refresh! grid)
           (show-selection r)))
 
@@ -168,12 +215,61 @@ columnview.data-table > header > button {
 cannot be started we say so and fall back, rather than leaving a cell that
 cannot be edited at all."
         (let ((command (effective-editor-command)))
-          (if command
-              (if (open-external-editor command sheet r (apply-edit r) notify)
+          (if (and command *path*)
+              (if (open-external-editor command *path* r notify)
                   (notify (format #f "Editing ~a in ~a"
                                   (ref->name r) (external-editor-name command)))
                   (edit-internally r))
               (edit-internally r))))
+
+      ;;
+      ;; Catching up with the disk
+      ;;
+
+      (define (rewatch!)
+        "Watch the open sheet, and only it."
+        (unwatch! *watcher*)
+        (set! *watcher*
+              (and *path* (watch-sheet! *path* reload-from-disk))))
+
+      (define (reload-from-disk)
+        "Something under the sheet folder changed; take the folder as the truth.
+
+Cellar's own writes come through here too, and have to be harmless when they
+do -- which they are, because by the time the file lands the model already says
+what the file says, and the comparison below finds nothing to do.  That is the
+whole reason this compares rather than tries to remember which files were ours."
+        (when (and *path* grid (sheet-directory? *path*))
+          (catch #t
+            (lambda ()
+              (let ((on-disk (read-sheet-cells *path*)))
+                (unless (equal? on-disk (cells-by-name sheet))
+                  (let* ((metadata (read-sheet-metadata *path*))
+                         (active (grid-active grid)))
+                    (alist->sheet! sheet on-disk)
+                    (grow-sheet! sheet
+                                 (or (assq-ref metadata 'rows) 0)
+                                 (or (assq-ref metadata 'columns) 0))
+                    (grid-sync-size! grid)
+                    ;; Keep the cursor where the user left it, unless the sheet
+                    ;; shrank out from under it.
+                    (grid-set-active! grid
+                                      (if (valid-ref? sheet active)
+                                          active
+                                          (make-ref 0 0)))
+                    (grid-refresh! grid)
+                    (show-selection (grid-active grid))
+                    (notify "Reloaded — the sheet changed on disk")))))
+            (lambda (key . args)
+              (report-failure "read the sheet" key args)))))
+
+      (define (cells-by-name sheet)
+        "The model's cells in the order `read-sheet-cells' gives the disk's, so
+that the two can simply be compared.  `sheet->alist' is in row-major order and
+the disk's is sorted by name; sorting both the same way is what makes Cellar's
+own writes come back through the watcher as no-ops."
+        (sort (sheet->alist sheet)
+              (lambda (a b) (string<? (car a) (car b)))))
 
       (define (report-failure what key args)
         (notify (if (and (eq? key 'cellar-store-error) (pair? args))
@@ -184,6 +280,9 @@ cannot be edited at all."
       ;;
       ;; Opening, making and saving
       ;;
+
+      ;; Which of the two questions the New Sheet dialog is currently asking.
+      (define *copying?* #f)
 
       (define (empty-sheet!)
         (alist->sheet! sheet '())
@@ -203,10 +302,12 @@ cannot be edited at all."
                 (lambda ()
                   (let ((widths (load-sheet! sheet directory)))
                     (set! *path* directory)
+                    (set! *scratch?* #f)
                     (grid-sync-size! grid)
                     (grid-set-column-widths! grid widths)
                     (grid-set-active! grid (make-ref 0 0))
                     (grid-refresh! grid)
+                    (rewatch!)
                     (show-sheet-page)
                     #t))
                 (lambda (key . args)
@@ -215,23 +316,48 @@ cannot be edited at all."
                   #f)))))
 
       (define (scratch-sheet)
-        "A sheet with nowhere to live yet.  Saving it asks where to put it."
-        (empty-sheet!)
-        (set! *path* #f)
-        (show-sheet-page))
+        "A sheet to think in.  It still lives in a folder -- everything does now
+-- but one Cellar picks, out of the way under the data directory, so that
+starting one asks nothing.  Copy To puts it somewhere you chose."
+        (catch #t
+          (lambda ()
+            (let ((directory (scratch-location)))
+              (create-sheet-directory! directory #f)
+              (empty-sheet!)
+              (set! *path* directory)
+              (set! *scratch?* #t)
+              (persist-layout!)
+              (rewatch!)
+              (show-sheet-page)))
+          (lambda (key . args)
+            (report-failure "make a scratch sheet" key args))))
 
-      (define (save-to directory)
+      (define (copy-to directory)
+        "Write the sheet to a folder of its own and carry on editing it there.
+The sheet you were in is left exactly as it was."
         (catch #t
           (lambda ()
             (save-sheet! sheet directory (grid-column-widths grid))
             (set! *path* directory)
+            (set! *scratch?* #f)
+            (rewatch!)
             (retitle)
-            (notify (format #f "Saved ~a" (sheet-name directory))))
+            (notify (format #f "Now editing ~a" (sheet-name directory))))
           (lambda (key . args)
-            (report-failure (format #f "save to ~a" (basename directory))
+            (report-failure (format #f "copy to ~a" (basename directory))
                             key args))))
 
-      (define (ask-for-new-sheet suggestion)
+      (define (ask-for-new-sheet suggestion copying?)
+        "The same dialog for New Sheet and for Copy To: both are a name and a
+place to put it, and COPYING? decides which of the two the answer means."
+        (set! *copying?* copying?)
+        (set-heading new-sheet-dialog (if copying? "Copy Sheet To" "New Sheet"))
+        (set-body new-sheet-dialog
+                  (if copying?
+                      "The sheet is written to a new folder, and that is the one you carry on editing. The folder you were in is left as it stands."
+                      "A sheet is a folder: one small file for every cell, and a primary file for the sheet itself."))
+        (adw-alert-dialog-set-response-label new-sheet-dialog "create"
+                                             (if copying? "Copy" "Create"))
         (gtk-editable-set-text new-sheet-name suggestion)
         (set-label new-sheet-location-label location)
         (present new-sheet-dialog window))
@@ -244,13 +370,19 @@ cannot be edited at all."
             (lambda ()
               (let ((made (create-sheet-directory! directory
                                                    (get-active new-sheet-git))))
-                (empty-sheet!)
-                (set! *path* directory)
-                (save-sheet! sheet directory (grid-column-widths grid))
-                (show-sheet-page)
-                (notify (if (eq? made 'created-without-git)
-                            "Created, but git could not be run"
-                            (format #f "Created ~a" (sheet-name directory))))))
+                (if *copying?*
+                    ;; copy-to writes the sheet and says where you now are.
+                    (copy-to directory)
+                    (begin
+                      (empty-sheet!)
+                      (set! *path* directory)
+                      (set! *scratch?* #f)
+                      (save-sheet! sheet directory (grid-column-widths grid))
+                      (rewatch!)
+                      (notify (format #f "Created ~a" (sheet-name directory)))))
+                (when (eq? made 'created-without-git)
+                  (notify "The folder was made, but git could not be run"))
+                (show-sheet-page)))
             (lambda (key . args)
               (report-failure (format #f "create ~a" (basename directory))
                               key args)))))
@@ -278,7 +410,7 @@ cannot be edited at all."
 
       (define (install-actions)
         (define-action "new" '("<Control>n")
-                    (lambda () (ask-for-new-sheet "sheet")))
+                    (lambda () (ask-for-new-sheet "sheet" #f)))
 
         (define-action "new-scratch" '("<Control><Shift>n")
                     (lambda () (scratch-sheet)))
@@ -287,17 +419,19 @@ cannot be edited at all."
                     (lambda ()
                       (choose-folder window (lambda (path) (open-sheet path)))))
 
+        ;; There is nothing to save: the sheet on disk is already this one.
+        ;; Ctrl+S is too deep a reflex to leave doing nothing silently, so it
+        ;; says so instead.
         (define-action "save" '("<Control>s")
                     (on-sheet
-                     (lambda ()
-                       (if *path*
-                           (save-to *path*)
-                           (ask-for-new-sheet "sheet")))))
+                     (lambda () (notify "Cellar saves each cell as you edit it"))))
 
-        (define-action "save-as" '("<Control><Shift>s")
+        (define-action "copy-to" '("<Control><Shift>s")
                     (on-sheet
                      (lambda ()
-                       (ask-for-new-sheet (if *path* (sheet-name *path*) "sheet")))))
+                       (ask-for-new-sheet
+                        (if (and *path* (not *scratch?*)) (sheet-name *path*) "sheet")
+                        #t))))
 
         (define-action "recalculate" '("<Control>r")
                     (on-sheet
@@ -311,6 +445,7 @@ cannot be edited at all."
                      (lambda ()
                        (let ((r (grid-active grid)))
                          (set-cell-source! sheet r "")
+                         (persist-cell! r)
                          (grid-refresh! grid)
                          (show-selection r)))))
 
@@ -370,7 +505,8 @@ cannot be edited at all."
       ;; Wayland matches the window to its .desktop file by application id and
       ;; ignores this; X11 has no such association and needs to be told.
       (set-icon-name window %application-id)
-      (set! grid (make-grid sheet-view sheet line-menu show-selection edit-cell))
+      (set! grid (make-grid sheet-view sheet line-menu show-selection edit-cell
+                             on-grid-change))
 
       (connect edit-button 'clicked
                (lambda (button) (edit-cell (grid-active grid))))
@@ -404,6 +540,23 @@ cannot be edited at all."
 
 (define (default-location)
   (or (getenv "HOME") (getcwd)))
+
+(define (scratch-location)
+  "A folder of its own for a scratch sheet, under the XDG data directory and
+named for the moment it was started, so two of them never collide."
+  (let* ((data (or (getenv "XDG_DATA_HOME")
+                   (string-append (or (getenv "HOME") (getcwd)) "/.local/share")))
+         (scratches (make-directories! (string-append data "/cellar/scratch"))))
+    (let loop ((stamp (strftime "%Y-%m-%d-%H%M%S" (localtime (current-time))))
+               (n 0))
+      (let ((candidate (string-append scratches "/"
+                                      (if (zero? n)
+                                          stamp
+                                          (format #f "~a-~a" stamp n))
+                                      ".cellar")))
+        (if (file-exists? candidate)
+            (loop stamp (+ n 1))
+            candidate)))))
 
 (define (sheet-folder-name name)
   "A sheet's folder is named like a file would be: budget -> budget.cellar."
@@ -526,7 +679,8 @@ one picks the folder, and making one picks the folder to make it in."
     ("Right-click a row number or a column header" . "The same four inserts")
     ("Ctrl+R" . "Recalculate the sheet")
     ("Ctrl+N / Ctrl+Shift+N" . "New sheet / New scratch sheet")
-    ("Ctrl+O / Ctrl+S" . "Open a sheet folder / Save")
+    ("Ctrl+O" . "Open a sheet folder")
+    ("Ctrl+Shift+S" . "Copy this sheet to another folder")
     ("Ctrl+," . "Preferences")
     ("Ctrl+Q" . "Quit")))
 

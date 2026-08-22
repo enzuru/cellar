@@ -31,7 +31,9 @@
         "Cancellable"
         "AsyncResult"
         "Subprocess"
-        "SubprocessFlags"))
+        "SubprocessFlags"
+        "FileMonitor"
+        "FileMonitorFlags"))
 
   (for-each (lambda (name) (gi-import-by-name "Pango" name))
       '("EllipsizeMode"))

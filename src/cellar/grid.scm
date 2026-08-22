@@ -43,8 +43,8 @@
 (define %gutter-width 60)
 
 (define-record-type <grid>
-  (%make-grid view sheet cells active on-select on-activate titles drag
-              row-list row-count columns menu)
+  (%make-grid view sheet cells active on-select on-activate on-change titles
+              drag row-list row-count columns menu)
   grid?
   (view grid-view)
   (sheet grid-sheet)
@@ -55,6 +55,10 @@
   (active grid-active %set-grid-active!)
   (on-select grid-on-select)
   (on-activate grid-on-activate)
+  ;; Called with a symbol -- 'cells or 'layout -- whenever the grid itself has
+  ;; changed the sheet: a row moved, a column inserted, a header dragged
+  ;; wider.  What the caller does with it is write the change to disk.
+  (on-change grid-on-change)
   ;; The column header widgets, each paired with its column's index box.  A
   ;; pairing rather than an order: GtkColumnView adds an inserted column's
   ;; header at the end of the header row whatever the column's position, so
@@ -95,16 +99,18 @@
 (define (column-index box) (car box))
 (define (set-column-index! box n) (set-car! box n))
 
-(define (make-grid view sheet line-menu on-select on-activate)
+(define (make-grid view sheet line-menu on-select on-activate on-change)
   "Turn VIEW, a GtkColumnView, into a grid over SHEET.
 LINE-MENU is the GMenuModel offered when a row number or a column header is
 right-clicked, or #f for no menu at all.
 ON-SELECT is called with a reference whenever the active cell changes.
 ON-ACTIVATE is called with a reference when a cell is double-clicked or
-activated from the keyboard."
+activated from the keyboard.
+ON-CHANGE is called with 'cells when the grid has moved or inserted something,
+and with 'layout when a column has been resized."
   (let* ((rows (row-model sheet))
          (grid (%make-grid view sheet '() (make-ref 0 0) on-select on-activate
-                           '() #f rows (sheet-rows sheet) '() #f)))
+                           on-change '() #f rows (sheet-rows sheet) '() #f)))
     (set-model view (gtk-no-selection-new rows))
     (install-line-menu! grid line-menu)
     ;; A narrow leading column of row numbers, standing in for the row headers
@@ -136,6 +142,11 @@ model exists only to give the view its row count."
     (let ((view-column (gtk-column-view-column-new title factory)))
       (set-fixed-width view-column width)
       (set-resizable view-column (>= (column-index index) 0))
+      ;; Connected after the width above is set, so building a column is not
+      ;; itself a change.  Dragging a header's edge is GTK's own gesture, which
+      ;; Cellar deliberately stays out of; this property is where it shows up.
+      (connect view-column 'notify::fixed-width
+               (lambda (column pspec) ((grid-on-change grid) 'layout)))
       view-column)))
 
 
@@ -329,6 +340,7 @@ Returns #t when the sheet changed."
                               (ref-after-move (grid-active grid) axis from to))
            (grid-refresh! grid)
            ((grid-on-select grid) (grid-active grid))
+           ((grid-on-change grid) 'cells)
            #t))))
 
 
@@ -360,6 +372,7 @@ insert above it carries it down.  Returns #t when the sheet changed."
            (%set-grid-active! grid (ref-after-insert active axis at))
            (grid-refresh! grid)
            ((grid-on-select grid) (grid-active grid))
+           ((grid-on-change grid) 'cells)
            (scroll-to-row grid (ref-row (grid-active grid)))
            #t))))
 

@@ -25,7 +25,8 @@ make run
 ```
 
 With no sheet named it opens on a start screen: open a sheet, make one, or take
-a scratch sheet that lives nowhere until you save it. Open one straight away
+a scratch sheet, which Cellar gives a folder of its own out of the way. Open one
+straight away
 with `make run FILE=example.cellar`, or build a standalone wrapper with
 `nix build` and run `./result/bin/cellar`.
 
@@ -168,17 +169,50 @@ at the size it was saved at rather than being trimmed back to the default 100×2
 |Ctrl+Alt+Up/Down                   |Insert a row before/after |
 |Ctrl+Alt+Left/Right                |Insert a column before/after|
 |Ctrl+R                             |Recalculate               |
-|Ctrl+O / Ctrl+S / Ctrl+Shift+S     |Open / Save / Save As     |
+|Ctrl+N / Ctrl+Shift+N              |New sheet / New scratch sheet|
+|Ctrl+O                             |Open a sheet folder       |
+|Ctrl+Shift+S                       |Copy this sheet elsewhere |
 |Ctrl+,                             |Preferences               |
 |Ctrl+Q                             |Quit                      |
+
+## Saving, which there is none of
+
+There is no Save. A cell is written to its own file the moment you apply the
+edit, so the folder on disk *is* the sheet rather than a copy of it taken when
+you last remembered to ask. Clearing a cell deletes its file; moving a row
+renames the files it moved; dragging a column wider records the width. Ctrl+S
+is bound only to say so.
+
+That falls out of the format. A sheet was already a folder of one file per
+cell, and a cell already held nothing but its source text, so there was never
+much reason for an edit to sit in memory waiting to be flushed — least of all
+when the whole point of the layout is that `git diff` should tell you what
+changed.
+
+The traffic goes the other way too. Cellar watches the sheet folder, and
+anything that changes a cell's file changes the cell: your editor, a
+`git checkout`, a script, another copy of Cellar. The grid reloads and the
+sheet recomputes, and a toast says why the numbers moved.
+
+The one thing worth knowing is that this makes an edit immediate and permanent
+in the same breath. There is no undo, and never was; what there is instead is
+the `git init` checkbox on the New Sheet dialog, which is the honest way to get
+one for a folder of text files.
+
+**Copy To…** (Ctrl+Shift+S) is what is left of Save As: it writes the sheet to
+a new folder and carries you on editing there, leaving the folder you came from
+as it stands. A **scratch sheet** (Ctrl+Shift+N) is an ordinary sheet in a
+folder Cellar picks, under `~/.local/share/cellar/scratch/`, so that starting
+one asks you nothing; Copy To is how it becomes a sheet you keep.
 
 ## Using your own editor
 
 Cellar's editor is not the only one you can use. Under **Preferences**
 (Ctrl+,) there is a switch for *Use an external editor* and a command to go
-with it. With that on, opening a cell writes its source to a file, runs your
-command on that file, and takes the file back as the cell the moment the
-command exits — so the cell is whatever your editor left behind.
+with it. With that on, opening a cell runs your command on the cell's own file
+— `cells/B2.scm`, the very file the sheet is made of — so saving in your editor
+is saving the cell. The grid catches up the moment you save, with the editor
+still open.
 
 `%s` in the command is where the file name goes. Without one it is added at the
 end, which is what most graphical editors want:
@@ -186,23 +220,19 @@ end, which is what most graphical editors want:
 |Command                        |What it opens                          |
 |-------------------------------|---------------------------------------|
 |`gnome-text-editor`            |Text Editor, with the file as its argument|
-|`gedit -w`                     |gedit, waiting for the window to close |
-|`code --wait`                  |VS Code, waiting for the tab to close  |
-|`emacsclient -c`               |a frame on a running Emacs             |
+|`gedit`                        |gedit                                  |
+|`code`                         |VS Code                                |
+|`emacsclient -n`               |a frame on a running Emacs             |
 |`xterm -e vim %s`              |vim, in a terminal of its own          |
 
-Two things to watch for. A terminal editor needs a terminal: `vim` on its own
-has nowhere to draw, so wrap it as above. And the editor has to *wait* — a
-command that returns as soon as it has handed the file to an already-running
-window gives Cellar an unedited file back. That is what `-w`, `--wait` and
-`emacsclient`'s foreground behaviour are for.
+One thing to watch for: a terminal editor needs a terminal. `vim` on its own has
+nowhere to draw, so wrap it as above.
 
-The file is a `.scm` named after the cell — `B2.scm`, the same name it has under
-[`cells/`](#file-format) — so your editor will highlight it as Scheme. It lives
-in a temporary directory that Cellar removes afterwards, not in the sheet
-folder, so an editor that leaves a swap or backup file beside it cannot litter
-the sheet. Nothing blocks while you are in there: the sheet stays usable, and
-you can have several cells out with editors at once.
+Your editor does **not** need to be told to wait. Cellar neither waits for it to
+exit nor reads anything back from it — it watches the sheet folder instead — so
+`code` and `gedit` want no `--wait`, and `emacsclient` is happier with `-n`.
+Leave the cell open in a buffer all afternoon and save whenever you like; each
+save lands in the sheet. Several cells can be open in several editors at once.
 
 The preference is saved in `~/.config/cellar/config.scm`. `CELLAR_EDITOR`
 overrides it for one run — set it to a command to force an external editor, or
@@ -262,7 +292,8 @@ data/dev.enzuru.Cellar.desktop  the desktop entry; the file name is the applicat
 data/icons/hicolor/  the application icon, full colour and symbolic
 src/cellar/gi.scm    all GObject Introspection imports, in one place
 src/cellar/model.scm the sheet: sources, evaluation, references — no GTK
-src/cellar/store.scm sheets on disk: the folder format — no GTK
+src/cellar/store.scm sheets on disk: the folder format, a cell at a time — no GTK
+src/cellar/watch.scm noticing that the folder changed under us
 src/cellar/grid.scm  the GtkColumnView spreadsheet
 src/cellar/editor.scm the code editor and its live result preview
 src/cellar/config.scm preferences, and the command parsing behind them — no GTK
@@ -317,9 +348,14 @@ honest one: the sheet really did change shape, and the references really did all
 change with it.
 
 Only files named exactly as a cell would be — `A1.scm`, `AA30.scm` — are read as
-cells, and only those are ever deleted by a save. A `README.md` beside them, or a
-`helpers.scm` in `cells/`, is yours and is left alone. A sheet can be opened by
-its folder or by the primary file inside it.
+cells, and only those are ever written or deleted. A `README.md` beside them, or
+a `helpers.scm` in `cells/`, is yours and is left alone — including by the
+watcher, which reads the folder but only ever finds cells in it. A sheet can be
+opened by its folder or by the primary file inside it.
+
+Because the folder is the sheet rather than a rendering of it, editing these
+files by hand is a supported way to use Cellar and not a way to corrupt it: see
+[Saving, which there is none of](#saving-which-there-is-none-of).
 
 ## Notes on G-Golf
 
@@ -389,12 +425,35 @@ the editor, in a colour the palette has never seen, which is the case that
 reloads the grid's CSS provider while the grid is on screen.
 The folder format is covered twice over. `make check` writes real directories
 in a temporary place and reads them back: the round trip, a cleared cell losing
-its file, a moved row leaving none behind, and a `README.md` or a stray
-`helpers.scm` in `cells/` surviving a save untouched. `tests/gui-start-smoke.sh`
-then drives the same thing through the application — the start screen, *New
-Sheet* with its git checkbox, writing a cell, saving — and reads the resulting
-folder off disk rather than photographing it, so the assertions are on files
-rather than on pixels.
+its file, a moved row leaving none behind, a `README.md` or a stray
+`helpers.scm` in `cells/` surviving a save untouched, one cell being written by
+itself, and a file whose contents are not changing keeping its mtime through a
+whole-sheet save. `tests/gui-start-smoke.sh` then drives the start screen
+through the application and reads the resulting folder off disk rather than
+photographing it — though see the note at the head of that file: from its third
+step on it does not currently drive every machine, for reasons that predate
+per-cell saving and are the harness's rather than the application's.
+
+Saving as you go, and catching up with the disk, are covered by `make smoke`.
+Its assertions are read off the sheet folder without anything ever having been
+saved: the cell edited in step 4 is in its own file, the reordering moved the
+files it moved, the inserted rows grew the primary file, and the widened column
+was remembered. The last step turns the external editor on through the
+preferences dialog, hands a cell to a stand-in editor that writes the cell's own
+file, and then makes Cellar rewrite the sheet from memory — if the watcher had
+missed the edit, that would overwrite it, so the expression surviving is the
+proof that the reload happened.
+
+The rest was driven by hand against a real GTK build: an edit landing on disk
+with no save; clearing a cell deleting its file; a cell file changed from
+outside reaching the grid, along with a cell file created from outside; an
+editor left open and saving twice, each save arriving while it still ran; a
+scratch sheet getting its own folder under the data directory and autosaving
+from the first keystroke; Copy To writing a new folder and carrying on there;
+and Ctrl+S saying what it now says. Cellar's own writes were checked not to come
+back as reloads — with the file watcher traced, seventeen of eighteen wake-ups
+found the disk already saying what the model said, and the one that did not was
+the external editor's.
 
 The external editor is covered by the last step of `make smoke`, which turns it
 on through the preferences dialog and edits a cell with a stand-in editor that

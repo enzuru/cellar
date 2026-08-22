@@ -31,7 +31,13 @@
             sheet-directory?
             create-sheet-directory!
             save-sheet!
+            save-cell!
+            cell-file-path
+            write-sheet-metadata!
+            read-sheet-cells
+            read-sheet-metadata
             load-sheet!
+            make-directories!
             sheet-name))
 
 (define %primary-file "sheet.scm")
@@ -71,6 +77,12 @@ by the primary file inside it, and both arrive here as the directory."
 (define (cell-file directory name)
   (string-append (cells-directory directory) "/" name %cell-suffix))
 
+(define (cell-file-path directory name)
+  "The file cell NAME lives in inside DIRECTORY -- which may not exist yet, an
+empty cell being a cell with no file.  Public because an external editor is
+pointed straight at it."
+  (cell-file directory name))
+
 
 ;;;
 ;;; Making one
@@ -104,6 +116,19 @@ no; the sheet itself is already written by then, so the caller carries on."
   (unless (file-exists? path)
     (mkdir path)))
 
+(define (make-directories! path)
+  "Make PATH and every directory above it that is not there yet.  `mkdir' makes
+one directory and fails if its parent is missing, which is no use for a path
+like ~/.local/share/cellar/scratch where the whole chain may be new."
+  (let loop ((parts (filter (lambda (part) (not (string-null? part)))
+                            (string-split path #\/)))
+             (so-far (if (string-prefix? "/" path) "" ".")))
+    (unless (null? parts)
+      (let ((next (string-append so-far "/" (car parts))))
+        (ensure-directory! next)
+        (loop (cdr parts) next))))
+  path)
+
 
 ;;;
 ;;; Writing
@@ -125,10 +150,29 @@ column index to pixel width."
                   (delete-file (cell-file directory name))))
               (stored-cell-names directory))))
 
+(define (save-cell! directory name source)
+  "Write one cell to disk: SOURCE into its file, or no file at all when the
+cell is empty.  This is how an edit reaches the disk -- a sheet is saved a cell
+at a time, so the file for a cell is current the moment you finish typing it."
+  (ensure-directory! directory)
+  (ensure-directory! (cells-directory directory))
+  (let ((file (cell-file directory name)))
+    (if (or (not (string? source)) (string-null? (string-trim-both source)))
+        (when (file-exists? file) (delete-file file))
+        (write-cell directory name source))))
+
+(define (write-sheet-metadata! directory rows columns widths)
+  "Write what is true of the sheet rather than of any one cell."
+  (ensure-directory! directory)
+  (write-primary directory rows columns widths))
+
 (define (write-primary directory rows columns widths)
+  (write-if-changed (primary-file directory) (primary-text rows columns widths)))
+
+(define (primary-text rows columns widths)
   ;; An entry to a line, so that changing the size of a sheet is a one-line
   ;; diff rather than a rewritten file.
-  (call-with-output-file (primary-file directory)
+  (call-with-output-string
     (lambda (port)
       (display ";; A Cellar sheet. The cells are in cells/, one file each.\n"
                port)
@@ -145,18 +189,43 @@ column index to pixel width."
               (begin (newline port) (loop (cdr entries) " "))))))))
 
 (define (write-cell directory name source)
-  (call-with-output-file (cell-file directory name)
-    (lambda (port)
-      (display source port)
-      ;; A trailing newline: these are text files, and diffs of files without
-      ;; one are a nuisance to read.
-      (unless (string-suffix? "\n" source)
-        (newline port)))))
+  ;; A trailing newline: these are text files, and diffs of files without one
+  ;; are a nuisance to read.
+  (write-if-changed (cell-file directory name)
+                    (if (string-suffix? "\n" source)
+                        source
+                        (string-append source "\n"))))
+
+(define (write-if-changed path text)
+  "Write TEXT to PATH, unless PATH already holds exactly that.
+
+Worth the read it costs.  Cellar rewrites every cell of a sheet for a single
+moved row, and most of those files are not changing; leaving them alone keeps
+their mtimes still, keeps `git status' honest about what was edited, and --
+since the sheet folder is watched -- stops Cellar waking itself up over its own
+writes.  A save of a sheet where one cell changed should be one write."
+  (unless (and (file-exists? path)
+               (catch #t
+                 (lambda ()
+                   (string=? text (call-with-input-file path get-string-all)))
+                 (lambda arguments #f)))
+    (call-with-output-file path (lambda (port) (display text port)))))
 
 
 ;;;
 ;;; Reading
 ;;;
+
+(define (read-sheet-cells directory)
+  "Every cell on disk, as an alist of name to source, sorted by name so that
+two readings of an unchanged directory compare equal."
+  (sort (map (lambda (name) (cons name (read-cell directory name)))
+             (stored-cell-names directory))
+        (lambda (a b) (string<? (car a) (car b)))))
+
+(define (read-sheet-metadata directory)
+  "The size and column widths recorded for the sheet at DIRECTORY."
+  (read-primary directory))
 
 (define (load-sheet! sheet directory)
   "Read the sheet at DIRECTORY into SHEET, replacing what was there.  Returns
@@ -165,10 +234,7 @@ the column widths it was saved with, as an alist of column index to width."
     (throw 'cellar-store-error
            (format #f "~a is not a Cellar sheet" directory)))
   (let ((metadata (read-primary directory)))
-    (alist->sheet! sheet
-                   (map (lambda (name)
-                          (cons name (read-cell directory name)))
-                        (stored-cell-names directory)))
+    (alist->sheet! sheet (read-sheet-cells directory))
     ;; The sheet is at least as big as it was saved: a sheet can be taller than
     ;; its last full row, and those empty rows are part of what was saved.
     (grow-sheet! sheet
