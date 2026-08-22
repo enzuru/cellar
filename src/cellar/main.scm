@@ -17,7 +17,11 @@
 (define %application-id "dev.enzuru.Cellar")
 
 (define %css "
+/* Monospace throughout the grid: digits that line up are the whole point of a
+   column of numbers, and a cell holds Scheme, which reads as code everywhere
+   else in the program too. */
 .cellar-cell, .cellar-gutter {
+  font-family: monospace;
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -48,6 +52,7 @@ columnview.data-table > header > button.cellar-drag-target {
   background-color: alpha(@accent_bg_color, 0.30);
 }
 columnview.data-table > header > button {
+  font-family: monospace;
   font-weight: bold;
 }
 ")
