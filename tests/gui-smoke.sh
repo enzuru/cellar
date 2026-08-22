@@ -25,7 +25,12 @@ export GDK_BACKEND=x11 GSK_RENDERER=cairo GUILE_AUTO_COMPILE=0
 # dbus-run-session, because GApplication is single-instance: with a Cellar
 # already running on your session bus this one would hand its activation to
 # that window and exit, leaving nothing here to photograph.
-dbus-run-session -- guile -L src -s bin/cellar.scm example.cellar > "$OUT/app.log" 2>&1 &
+# A copy of the example, because this script goes on to save over it.
+SHEET="$OUT/example.cellar"
+rm -rf "$SHEET"
+cp -r example.cellar "$SHEET"
+
+dbus-run-session -- guile -L src -s bin/cellar.scm "$SHEET" > "$OUT/app.log" 2>&1 &
 APP=$!
 trap 'kill $APP 2>/dev/null' EXIT
 
@@ -115,19 +120,81 @@ sleep 2
 xdotool key ctrl+Return; sleep 4
 shot 15-coloured
 
+# Adding rows and columns. Ctrl+Alt+arrow opens an empty line at the active
+# cell; everything below or right of it shifts along, and the references shift
+# with it, so the Total column has to survive this as it survives a move -- and
+# a row opened inside the range it sums has to be taken into the range.
+echo "9. add a row and a column"
+xdotool mousemove 220 164 click 1; sleep 2
+shot 16-before-insert
+xdotool key ctrl+alt+Down; sleep 3
+shot 17-row-added
+xdotool key ctrl+alt+Right; sleep 3
+shot 18-column-added
+# The keyboard move still lands on the right column now that the letters have
+# all shifted along.
+xdotool key ctrl+shift+Left; sleep 3
+shot 19-column-moved-after-insert
+
+# And the new column's header drags like any other. Its header widget did not
+# exist when the view was built, so a gesture that never reached it would show
+# here as a drag that does nothing: watch the empty column C swap with Qty.
+xdotool mousemove 400 111; sleep 1
+xdotool mousedown 1; sleep 1
+for x in 380 340 300 260; do xdotool mousemove $x 111; sleep 0.3; done
+sleep 1; shot 20-new-column-dragging
+xdotool mouseup 1; sleep 2
+shot 21-new-column-dropped
+
+# The context menu: right-clicking a row number or a column header picks that
+# line and offers the four inserts. The row picked has to be the one under the
+# pointer, not the one that was active before.
+echo "10. the context menu on the gutter and on a header"
+xdotool mousemove 35 314 click 3; sleep 3
+shot 22-gutter-menu
+# "Insert Row Before" is the first item, just under the pointer.
+xdotool mousemove 120 334 click 1; sleep 3
+shot 23-inserted-from-gutter
+xdotool mousemove 400 111 click 3; sleep 3
+shot 24-header-menu
+xdotool key Escape; sleep 2
+
 # The application icon, resolved by application id out of data/icons. The menu
 # button is at 957 -- 1070 is the close button, which quits the app instead.
-echo "9. about dialog"
+echo "11. about dialog"
 xdotool mousemove 957 27 click 1; sleep 3
-shot 16-menu
+shot 25-menu
 # Click "About Cellar" by position. Never press Return here: the highlighted
 # item is "Open...", and that summons the portal file chooser onto your real
 # desktop.
-xdotool mousemove 907 429 click 1; sleep 4
-shot 17-about
+xdotool mousemove 907 579 click 1; sleep 4
+shot 26-about
 xdotool key Escape; sleep 2
+
+# Saving. A sheet is a folder of one file per cell, so what a save did is
+# something this script can read rather than photograph.
+echo "12. save the sheet"
+xdotool key ctrl+s; sleep 3
+shot 27-saved
+
+failures=0
+expect () {
+  local what="$1"; shift
+  if "$@"; then echo "  ok   $what"; else echo "  FAIL $what"; failures=$((failures + 1)); fi
+}
+contains () { grep -q "$2" "$1"; }
+
+# The cell edited in step 4 has been carried around by every move since; it
+# is at E2 by now, which is the point -- its file followed it.
+expect "the edited cell is on disk under its new name" contains "$SHEET/cells/E2.scm" 'string-length'
+expect "the subtotal came through the reordering" contains "$SHEET/cells/E7.scm" 'range'
+expect "the sheet grew with the rows we added" contains "$SHEET/sheet.scm" 'rows . 10[0-9]'
+expect "the column we widened was remembered" contains "$SHEET/sheet.scm" 'widths ('
+expect "a cell nobody filled in has no file" test ! -f "$SHEET/cells/J20.scm"
 
 echo
 echo "app log (excluding harmless EGL noise):"
 grep -av "libEGL\|DRI3" "$OUT/app.log" | head -5
 echo "screenshots in $OUT"
+if [ "$failures" -gt 0 ]; then echo "$failures FAILURE(S)"; exit 1; fi
+echo "ALL CHECKS PASSED"

@@ -6,6 +6,7 @@
   #:use-module (cellar gi)
   #:use-module (cellar model)
   #:use-module (cellar grid)
+  #:use-module (cellar store)
   #:use-module (cellar editor)
   #:use-module (ice-9 match)
   #:use-module (ice-9 string-fun)
@@ -70,7 +71,6 @@ columnview.data-table > header > button {
   (let ((file (match (cdr arguments)
                 (() #f)
                 ((path . _) path))))
-    (set! *path* file)
     (let ((application (make <adw-application>
                          #:application-id %application-id)))
       (connect application 'activate
@@ -96,15 +96,47 @@ columnview.data-table > header > button {
            (recalculate-button (get-object builder "recalculate_button"))
            (toast-overlay (get-object builder "toast_overlay"))
            (sheet-view (get-object builder "sheet_view"))
+           (line-menu (get-object builder "line_menu"))
+           (cell-bar (get-object builder "cell_bar"))
+           (main-stack (get-object builder "main_stack"))
+           (new-sheet-dialog (get-object builder "new_sheet_dialog"))
+           (new-sheet-name (get-object builder "new_sheet_name"))
+           (new-sheet-location (get-object builder "new_sheet_location"))
+           (new-sheet-location-label
+            (get-object builder "new_sheet_location_label"))
+           (new-sheet-git (get-object builder "new_sheet_git"))
            (sheet (make-sheet %rows %columns))
-           (grid #f))
+           (grid #f)
+           ;; Where the New Sheet dialog would put a sheet, until told otherwise.
+           (location (default-location)))
 
       (define (notify message)
         (add-toast toast-overlay (make <adw-toast> #:title message)))
 
+      (define (sheet-showing?)
+        (equal? "sheet" (get-visible-child-name main-stack)))
+
       (define (retitle)
         (set-subtitle window-title
-                      (if *path* (basename *path*) "Untitled")))
+                      (cond (*path* (sheet-name *path*))
+                            ((sheet-showing?) "Unsaved")
+                            (else "No sheet open"))))
+
+      (define (show-start-page)
+        (set-visible-child-name main-stack "start")
+        ;; The cell bar and the recalculate button speak about a sheet; with no
+        ;; sheet open there is nothing for them to say.
+        (set-visible cell-bar #f)
+        (set-visible recalculate-button #f)
+        (retitle))
+
+      (define (show-sheet-page)
+        (set-visible-child-name main-stack "sheet")
+        (set-visible cell-bar #t)
+        (set-visible recalculate-button #t)
+        (retitle)
+        (show-selection (grid-active grid))
+        (grid-focus! grid))
 
       (define (show-selection r)
         (set-label reference-label (ref->name r))
@@ -125,12 +157,199 @@ columnview.data-table > header > button {
                             (grid-refresh! grid)
                             (show-selection r))))
 
+      (define (report-failure what key args)
+        (notify (if (and (eq? key 'cellar-store-error) (pair? args))
+                    (car args)
+                    (format #f "Could not ~a" what))))
+
+
+      ;;
+      ;; Opening, making and saving
+      ;;
+
+      (define (empty-sheet!)
+        (alist->sheet! sheet '())
+        (grow-sheet! sheet %rows %columns)
+        (grid-sync-size! grid)
+        (grid-set-active! grid (make-ref 0 0))
+        (grid-refresh! grid))
+
+      (define (open-sheet path)
+        "Open the sheet PATH names, by its directory or by its primary file."
+        (let ((directory (sheet-directory path)))
+          (if (not (sheet-directory? directory))
+              (begin
+                (notify (format #f "~a is not a Cellar sheet" (basename directory)))
+                #f)
+              (catch #t
+                (lambda ()
+                  (let ((widths (load-sheet! sheet directory)))
+                    (set! *path* directory)
+                    (grid-sync-size! grid)
+                    (grid-set-column-widths! grid widths)
+                    (grid-set-active! grid (make-ref 0 0))
+                    (grid-refresh! grid)
+                    (show-sheet-page)
+                    #t))
+                (lambda (key . args)
+                  (report-failure (format #f "open ~a" (basename directory))
+                                  key args)
+                  #f)))))
+
+      (define (scratch-sheet)
+        "A sheet with nowhere to live yet.  Saving it asks where to put it."
+        (empty-sheet!)
+        (set! *path* #f)
+        (show-sheet-page))
+
+      (define (save-to directory)
+        (catch #t
+          (lambda ()
+            (save-sheet! sheet directory (grid-column-widths grid))
+            (set! *path* directory)
+            (retitle)
+            (notify (format #f "Saved ~a" (sheet-name directory))))
+          (lambda (key . args)
+            (report-failure (format #f "save to ~a" (basename directory))
+                            key args))))
+
+      (define (ask-for-new-sheet suggestion)
+        (gtk-editable-set-text new-sheet-name suggestion)
+        (set-label new-sheet-location-label location)
+        (present new-sheet-dialog window))
+
+      (define (create-new-sheet)
+        (let* ((typed (string-trim-both (gtk-editable-get-text new-sheet-name)))
+               (name (if (string-null? typed) "sheet" typed))
+               (directory (string-append location "/" (sheet-folder-name name))))
+          (catch #t
+            (lambda ()
+              (let ((made (create-sheet-directory! directory
+                                                   (get-active new-sheet-git))))
+                (empty-sheet!)
+                (set! *path* directory)
+                (save-sheet! sheet directory (grid-column-widths grid))
+                (show-sheet-page)
+                (notify (if (eq? made 'created-without-git)
+                            "Created, but git could not be run"
+                            (format #f "Created ~a" (sheet-name directory))))))
+            (lambda (key . args)
+              (report-failure (format #f "create ~a" (basename directory))
+                              key args)))))
+
+
+      ;;
+      ;; Actions
+      ;;
+
+      ;; Named define-action, not add-action: a local `add-action' would shadow
+      ;; the GActionMap generic of the same name that it needs to call.
+      (define (define-action name accelerators procedure)
+        (let ((action (make <g-simple-action> #:name name)))
+          (connect action 'activate (lambda (action parameter) (procedure)))
+          (g-action-map-add-action application action)
+          (unless (null? accelerators)
+            (set-accels-for-action application
+                                   (string-append "app." name)
+                                   accelerators))))
+
+      ;; An action that means nothing with no sheet on screen, and does
+      ;; nothing there: the shortcuts are live whichever page is showing.
+      (define (on-sheet procedure)
+        (lambda () (when (sheet-showing?) (procedure))))
+
+      (define (install-actions)
+        (define-action "new" '("<Control>n")
+                    (lambda () (ask-for-new-sheet "sheet")))
+
+        (define-action "new-scratch" '("<Control><Shift>n")
+                    (lambda () (scratch-sheet)))
+
+        (define-action "open" '("<Control>o")
+                    (lambda ()
+                      (choose-folder window (lambda (path) (open-sheet path)))))
+
+        (define-action "save" '("<Control>s")
+                    (on-sheet
+                     (lambda ()
+                       (if *path*
+                           (save-to *path*)
+                           (ask-for-new-sheet "sheet")))))
+
+        (define-action "save-as" '("<Control><Shift>s")
+                    (on-sheet
+                     (lambda ()
+                       (ask-for-new-sheet (if *path* (sheet-name *path*) "sheet")))))
+
+        (define-action "recalculate" '("<Control>r")
+                    (on-sheet
+                     (lambda ()
+                       (invalidate-sheet! sheet)
+                       (grid-refresh! grid)
+                       (notify "Recalculated"))))
+
+        (define-action "clear-cell" '("Delete")
+                    (on-sheet
+                     (lambda ()
+                       (let ((r (grid-active grid)))
+                         (set-cell-source! sheet r "")
+                         (grid-refresh! grid)
+                         (show-selection r)))))
+
+        (define-action "edit-cell" '("<Control>e")
+                    (on-sheet (lambda () (edit-cell (grid-active grid)))))
+
+        ;; Reordering. The model rewrites references as it moves cells, so a
+        ;; sheet means the same thing after a move as it did before; all that
+        ;; changes is where you read it.
+        (define (move-line axis delta)
+          (on-sheet
+           (lambda ()
+             (unless (grid-move-line! grid axis delta)
+               (notify (if (eq? axis 'row)
+                           "The row is already at the edge of the sheet"
+                           "The column is already at the edge of the sheet"))))))
+
+        (define-action "move-row-up" '("<Control><Shift>Up") (move-line 'row -1))
+        (define-action "move-row-down" '("<Control><Shift>Down") (move-line 'row 1))
+        (define-action "move-column-left" '("<Control><Shift>Left")
+                    (move-line 'column -1))
+        (define-action "move-column-right" '("<Control><Shift>Right")
+                    (move-line 'column 1))
+
+        ;; Inserting, which is the same machinery seen from the other side: the
+        ;; cells below or to the right shift along, and every reference to them
+        ;; shifts too.
+        (define (insert-line axis where)
+          (on-sheet
+           (lambda ()
+             (when (grid-insert-line! grid axis where)
+               (notify (if (eq? axis 'row) "Row inserted" "Column inserted"))))))
+
+        (define-action "insert-row-before" '("<Control><Alt>Up")
+                    (insert-line 'row 'before))
+        (define-action "insert-row-after" '("<Control><Alt>Down")
+                    (insert-line 'row 'after))
+        (define-action "insert-column-before" '("<Control><Alt>Left")
+                    (insert-line 'column 'before))
+        (define-action "insert-column-after" '("<Control><Alt>Right")
+                    (insert-line 'column 'after))
+
+        (define-action "shortcuts" '("<Control>question")
+                    (lambda () (show-shortcuts window)))
+
+        (define-action "about" '()
+                    (lambda () (show-about window)))
+
+        (define-action "quit" '("<Control>q")
+                    (lambda () (gtk-window-close window))))
+
       (install-css)
       (install-icons)
       ;; Wayland matches the window to its .desktop file by application id and
       ;; ignores this; X11 has no such association and needs to be told.
       (set-icon-name window %application-id)
-      (set! grid (make-grid sheet-view sheet show-selection edit-cell))
+      (set! grid (make-grid sheet-view sheet line-menu show-selection edit-cell))
 
       (connect edit-button 'clicked
                (lambda (button) (edit-cell (grid-active grid))))
@@ -139,21 +358,37 @@ columnview.data-table > header > button {
                  (invalidate-sheet! sheet)
                  (grid-refresh! grid)
                  (notify "Recalculated")))
+      (connect new-sheet-location 'clicked
+               (lambda (button)
+                 (choose-folder window
+                                (lambda (path)
+                                  (set! location path)
+                                  (set-label new-sheet-location-label path)))))
+      (connect new-sheet-dialog 'response
+               (lambda (dialog response)
+                 (when (equal? response "create")
+                   (create-new-sheet))))
 
-      (install-actions application window sheet grid notify retitle
-                       show-selection edit-cell)
+      (install-actions)
+      (show-start-page)
 
-      (when file
-        (if (file-exists? file)
-            (begin (load-sheet! sheet file)
-                   (grid-refresh! grid))
-            (notify (format #f "~a does not exist yet" (basename file)))))
-
-      (retitle)
-      (show-selection (grid-active grid))
       (add-window application window)
       (present window)
-      (grid-focus! grid))))
+
+      ;; A sheet named on the command line opens straight away; without one the
+      ;; start page asks what to open, since a sheet now has to live somewhere.
+      (when file
+        (unless (open-sheet file)
+          (show-start-page))))))
+
+(define (default-location)
+  (or (getenv "HOME") (getcwd)))
+
+(define (sheet-folder-name name)
+  "A sheet's folder is named like a file would be: budget -> budget.cellar."
+  (if (string-suffix? ".cellar" name)
+      name
+      (string-append name ".cellar")))
 
 (define (one-line text)
   "Collapse TEXT onto a single line for the cell bar."
@@ -210,116 +445,8 @@ so #f here is the normal answer and not an error."
 
 
 ;;;
-;;; Actions
-;;;
-
-(define (install-actions application window sheet grid notify retitle
-                         show-selection edit-cell)
-  ;; Named define-action, not add-action: a local `add-action' would shadow
-  ;; the GActionMap generic of the same name that it needs to call.
-  (define (define-action name accelerators procedure)
-    (let ((action (make <g-simple-action> #:name name)))
-      (connect action 'activate (lambda (action parameter) (procedure)))
-      (g-action-map-add-action application action)
-      (unless (null? accelerators)
-        (set-accels-for-action application
-                               (string-append "app." name)
-                               accelerators))))
-
-  (define-action "recalculate" '("<Control>r")
-              (lambda ()
-                (invalidate-sheet! sheet)
-                (grid-refresh! grid)
-                (notify "Recalculated")))
-
-  (define-action "clear-cell" '("Delete")
-              (lambda ()
-                (let ((r (grid-active grid)))
-                  (set-cell-source! sheet r "")
-                  (grid-refresh! grid)
-                  (show-selection r))))
-
-  (define-action "edit-cell" '("<Control>e")
-              (lambda () (edit-cell (grid-active grid))))
-
-  ;; Reordering. The model rewrites references as it moves cells, so a sheet
-  ;; means the same thing after a move as it did before; all that changes is
-  ;; where you read it.
-  (define (move-line axis delta)
-    (lambda ()
-      (unless (grid-move-line! grid axis delta)
-        (notify (if (eq? axis 'row)
-                    "The row is already at the edge of the sheet"
-                    "The column is already at the edge of the sheet")))))
-
-  (define-action "move-row-up" '("<Control><Shift>Up") (move-line 'row -1))
-  (define-action "move-row-down" '("<Control><Shift>Down") (move-line 'row 1))
-  (define-action "move-column-left" '("<Control><Shift>Left")
-              (move-line 'column -1))
-  (define-action "move-column-right" '("<Control><Shift>Right")
-              (move-line 'column 1))
-
-  (define-action "save" '("<Control>s")
-              (lambda ()
-                (if *path*
-                    (begin (save-sheet sheet *path*)
-                           (notify (format #f "Saved ~a" (basename *path*))))
-                    (choose-save-path window
-                                      (lambda (path)
-                                        (set! *path* path)
-                                        (save-sheet sheet path)
-                                        (retitle)
-                                        (notify (format #f "Saved ~a"
-                                                        (basename path))))))))
-
-  (define-action "save-as" '("<Control><Shift>s")
-              (lambda ()
-                (choose-save-path window
-                                  (lambda (path)
-                                    (set! *path* path)
-                                    (save-sheet sheet path)
-                                    (retitle)
-                                    (notify (format #f "Saved ~a"
-                                                    (basename path)))))))
-
-  (define-action "open" '("<Control>o")
-              (lambda ()
-                (choose-open-path window
-                                  (lambda (path)
-                                    (set! *path* path)
-                                    (load-sheet! sheet path)
-                                    (grid-refresh! grid)
-                                    (retitle)
-                                    (show-selection (grid-active grid))
-                                    (notify (format #f "Opened ~a"
-                                                    (basename path)))))))
-
-  (define-action "shortcuts" '("<Control>question")
-              (lambda () (show-shortcuts window)))
-
-  (define-action "about" '()
-              (lambda () (show-about window)))
-
-  (define-action "quit" '("<Control>q")
-              (lambda () (gtk-window-close window))))
-
-
-;;;
 ;;; Files
 ;;;
-
-(define (save-sheet sheet path)
-  (call-with-output-file path
-    (lambda (port)
-      (display ";; A Cellar sheet: an alist of cell name to Guile source.\n" port)
-      (write (sheet->alist sheet) port)
-      (newline port))))
-
-(define (load-sheet! sheet path)
-  (let ((data (call-with-input-file path read)))
-    (if (list? data)
-        (alist->sheet! sheet data)
-        (error "cellar: not a sheet file:" path))))
 
 (define (chosen-file finish dialog result)
   "Run FINISH on an async file-dialog result, returning the chosen path or #f.
@@ -331,23 +458,17 @@ catch, so real failures are not silently swallowed."
                 (lambda args #f))))
     (and file (get-path file))))
 
-(define (choose-save-path window continue)
-  (let ((dialog (make <gtk-file-dialog>
-                  #:title "Save Sheet"
-                  #:initial-name "sheet.cellar")))
-    (gtk-file-dialog-save
-     dialog window #f
-     (lambda (dialog result data)
-       (let ((path (chosen-file gtk-file-dialog-save-finish dialog result)))
-         (when path (continue path))))
-     #f)))
+(define (choose-folder window continue)
+  "Ask for a folder, and call CONTINUE with its path.
 
-(define (choose-open-path window continue)
-  (let ((dialog (make <gtk-file-dialog> #:title "Open Sheet")))
-    (gtk-file-dialog-open
+A sheet is a folder, so this is the one chooser the application needs: opening
+one picks the folder, and making one picks the folder to make it in."
+  (let ((dialog (make <gtk-file-dialog> #:title "Choose a Folder")))
+    (gtk-file-dialog-select-folder
      dialog window #f
      (lambda (dialog result data)
-       (let ((path (chosen-file gtk-file-dialog-open-finish dialog result)))
+       (let ((path (chosen-file gtk-file-dialog-select-folder-finish
+                                dialog result)))
          (when path (continue path))))
      #f)))
 
@@ -374,8 +495,12 @@ catch, so real failures are not silently swallowed."
     ("Delete" . "Clear the active cell")
     ("Ctrl+Shift+Up / Down" . "Move the active row up or down")
     ("Ctrl+Shift+Left / Right" . "Move the active column left or right")
+    ("Ctrl+Alt+Up / Down" . "Insert a row before or after the active one")
+    ("Ctrl+Alt+Left / Right" . "Insert a column before or after the active one")
+    ("Right-click a row number or a column header" . "The same four inserts")
     ("Ctrl+R" . "Recalculate the sheet")
-    ("Ctrl+O / Ctrl+S" . "Open / Save")
+    ("Ctrl+N / Ctrl+Shift+N" . "New sheet / New scratch sheet")
+    ("Ctrl+O / Ctrl+S" . "Open a sheet folder / Save")
     ("Ctrl+Q" . "Quit")))
 
 (define (show-shortcuts window)

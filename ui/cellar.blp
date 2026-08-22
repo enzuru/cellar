@@ -4,7 +4,17 @@ using Adw 1;
 menu primary_menu {
   section {
     item {
-      label: _("_Open…");
+      label: _("_New Sheet…");
+      action: "app.new";
+    }
+
+    item {
+      label: _("New _Scratch Sheet");
+      action: "app.new-scratch";
+    }
+
+    item {
+      label: _("_Open Sheet…");
       action: "app.open";
     }
 
@@ -55,6 +65,28 @@ menu primary_menu {
 
   section {
     item {
+      label: _("Insert Row _Before");
+      action: "app.insert-row-before";
+    }
+
+    item {
+      label: _("Insert Row _After");
+      action: "app.insert-row-after";
+    }
+
+    item {
+      label: _("Insert Column Be_fore");
+      action: "app.insert-column-before";
+    }
+
+    item {
+      label: _("Insert Column A_fter");
+      action: "app.insert-column-after";
+    }
+  }
+
+  section {
+    item {
       label: _("_Keyboard Shortcuts");
       action: "app.shortcuts";
     }
@@ -64,6 +96,65 @@ menu primary_menu {
       action: "app.about";
     }
   }
+}
+
+menu line_menu {
+  section {
+    item {
+      label: _("Insert Row Before");
+      action: "app.insert-row-before";
+    }
+
+    item {
+      label: _("Insert Row After");
+      action: "app.insert-row-after";
+    }
+
+    item {
+      label: _("Insert Column Before");
+      action: "app.insert-column-before";
+    }
+
+    item {
+      label: _("Insert Column After");
+      action: "app.insert-column-after";
+    }
+  }
+}
+
+Adw.AlertDialog new_sheet_dialog {
+  heading: _("New Sheet");
+  body: _("A sheet is a folder: one small file for every cell, and a primary file for the sheet itself.");
+  default-response: "create";
+  close-response: "cancel";
+
+  responses [
+    cancel: _("Cancel"),
+    create: _("Create") suggested,
+  ]
+
+  extra-child: Gtk.Box {
+    orientation: vertical;
+    spacing: 12;
+    margin-top: 12;
+
+    Gtk.Entry new_sheet_name {
+      placeholder-text: _("Name");
+      activates-default: true;
+    }
+
+    Gtk.Button new_sheet_location {
+      child: Gtk.Label new_sheet_location_label {
+        ellipsize: middle;
+        label: _("Choose a folder…");
+      };
+    }
+
+    Gtk.CheckButton new_sheet_git {
+      label: _("Initialize a Git repository");
+      active: true;
+    }
+  };
 }
 
 Adw.ApplicationWindow main_window {
@@ -96,7 +187,7 @@ Adw.ApplicationWindow main_window {
 
     // The cell bar: which cell is selected, and the Guile source behind it.
     [top]
-    Gtk.Box {
+    Gtk.Box cell_bar {
       spacing: 6;
       margin-start: 6;
       margin-end: 6;
@@ -142,20 +233,70 @@ Adw.ApplicationWindow main_window {
     }
 
     content: Adw.ToastOverlay toast_overlay {
-      Gtk.ScrolledWindow {
-        hexpand: true;
-        vexpand: true;
-        hscrollbar-policy: automatic;
-        vscrollbar-policy: automatic;
+      Gtk.Stack main_stack {
+        Gtk.StackPage {
+          name: "start";
 
-        Gtk.ColumnView sheet_view {
-          show-row-separators: true;
-          show-column-separators: true;
-          reorderable: false;
+          child: Adw.StatusPage {
+            icon-name: "dev.enzuru.Cellar";
+            title: _("Cellar");
+            description: _("A sheet is a folder of small files — one for each cell — so a spreadsheet can be kept under version control like anything else you write.");
 
-          styles [
-            "data-table",
-          ]
+            child: Gtk.Box {
+              orientation: vertical;
+              spacing: 12;
+              halign: center;
+
+              Gtk.Button {
+                label: _("Open Sheet…");
+                action-name: "app.open";
+
+                styles [
+                  "pill",
+                  "suggested-action",
+                ]
+              }
+
+              Gtk.Button {
+                label: _("New Sheet…");
+                action-name: "app.new";
+
+                styles [
+                  "pill",
+                ]
+              }
+
+              Gtk.Button {
+                label: _("New Scratch Sheet");
+                action-name: "app.new-scratch";
+
+                styles [
+                  "flat",
+                ]
+              }
+            };
+          };
+        }
+
+        Gtk.StackPage {
+          name: "sheet";
+
+          child: Gtk.ScrolledWindow {
+            hexpand: true;
+            vexpand: true;
+            hscrollbar-policy: automatic;
+            vscrollbar-policy: automatic;
+
+            Gtk.ColumnView sheet_view {
+              show-row-separators: true;
+              show-column-separators: true;
+              reorderable: false;
+
+              styles [
+                "data-table",
+              ]
+            }
+          };
         }
       }
     };

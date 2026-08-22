@@ -29,6 +29,10 @@
             move-row!
             move-column!
             ref-after-move
+            insert-row!
+            insert-column!
+            ref-after-insert
+            grow-sheet!
             sheet-refs
             sheet->alist
             alist->sheet!
@@ -175,8 +179,8 @@ nothing that could carry punctuation of its own reaches the CSS."
 (define-record-type <sheet>
   (%make-sheet rows columns sources cache pending module)
   sheet?
-  (rows sheet-rows)
-  (columns sheet-columns)
+  (rows sheet-rows set-sheet-rows!)
+  (columns sheet-columns set-sheet-columns!)
   (sources sheet-sources)
   (cache sheet-cache)
   ;; References currently being evaluated, used to detect circular references.
@@ -287,7 +291,10 @@ this to keep the active cell on the same cell across a move."
               (moved (hash-map->list
                       (lambda (r text)
                         (cons (ref-after-move r axis from to)
-                              (rewrite-refs text axis from to)))
+                              (rewrite-refs text
+                                            (lambda (r)
+                                              (ref-after-move r axis from to))
+                                            (range-spans text axis from to))))
                       sources)))
          (hash-clear! sources)
          (for-each (lambda (entry) (hash-set! sources (car entry) (cdr entry)))
@@ -299,10 +306,11 @@ this to keep the active cell on the same cell across a move."
   (or (char-whitespace? c)
       (memv c '(#\( #\) #\[ #\] #\" #\' #\` #\, #\;))))
 
-(define (rewrite-refs text axis from to)
-  "Rewrite every cell reference in TEXT for a move of FROM to TO along AXIS,
-leaving everything else -- spacing, comments, the shape of the code -- exactly
-as it was.
+(define (rewrite-refs text relocate spans)
+  "Rewrite every cell reference in TEXT through RELOCATE, leaving everything
+else -- spacing, comments, the shape of the code -- exactly as it was.  SPANS
+holds the regions the caller has already decided for itself, as
+(start end . replacement); a range under a move is the one such case.
 
 A reference is any token between delimiters that name->ref accepts, which
 covers both the bare `A1' the evaluator binds as a variable and the quoted
@@ -310,8 +318,7 @@ covers both the bare `A1' the evaluator binds as a variable and the quoted
 rather than on read data means a moved cell comes back formatted the way it
 was written; the cost is that an A1 sitting in a quoted list or an ordinary
 string is rewritten too."
-  (let ((spans (range-spans text axis from to))
-        (len (string-length text)))
+  (let ((len (string-length text)))
     (let loop ((i 0) (pieces '()))
       (cond
        ((= i len) (string-concatenate (reverse pieces)))
@@ -326,12 +333,12 @@ string is rewritten too."
                      (if (or (= j len) (reference-delimiter? (string-ref text j)))
                          j
                          (scan (+ j 1))))))
-          (loop end (cons (rewrite-token (substring text i end) axis from to)
+          (loop end (cons (rewrite-token (substring text i end) relocate)
                           pieces))))))))
 
-(define (rewrite-token token axis from to)
+(define (rewrite-token token relocate)
   (let ((r (name->ref token)))
-    (if r (ref->name (ref-after-move r axis from to)) token)))
+    (if r (ref->name (relocate r)) token)))
 
 (define %range-call
   (make-regexp
@@ -365,6 +372,64 @@ moved in."
                          (cons* (match:start m 2) (match:end m 2)
                                 (ref->name (corner b)))
                          spans)))))))
+
+
+;;;
+;;; Inserting
+;;;
+
+;; Opening a row in the middle of a sheet is the same problem as moving one:
+;; everything below it shifts, and every reference to what shifted has to shift
+;; with it or the sheet changes meaning.  Ranges need no special case here.  A
+;; range whose corners straddle the new line grows to take it in -- its far
+;; corner moves down and its near one does not -- while one written entirely
+;; below the new line simply follows it down, and both are what a spreadsheet
+;; is expected to do.
+
+(define (shift-index-for-insert i at)
+  "Where index I lands when a new line is opened at index AT."
+  (if (>= i at) (+ i 1) i))
+
+(define (ref-after-insert r axis at)
+  "Where reference R lands when a line is inserted at AT along AXIS.  The grid
+uses this to keep the active cell on the same cell across an insert."
+  (if (eq? axis 'row)
+      (make-ref (shift-index-for-insert (ref-row r) at) (ref-column r))
+      (make-ref (ref-row r) (shift-index-for-insert (ref-column r) at))))
+
+(define (insert-row! sheet at)
+  "Open an empty row at index AT, 0-based, pushing the rows from AT downwards
+and growing the sheet by one.  AT may be the row count, which appends a row.
+Returns #t when the sheet changed, #f when AT is out of range."
+  (insert-line! sheet 'row at))
+
+(define (insert-column! sheet at)
+  "Open an empty column at index AT, 0-based, pushing the columns from AT
+rightwards and growing the sheet by one.  AT may be the column count, which
+appends a column.  Returns #t when the sheet changed, #f when AT is out of
+range."
+  (insert-line! sheet 'column at))
+
+(define (insert-line! sheet axis at)
+  "The common core of insert-row! and insert-column!."
+  (let ((limit (if (eq? axis 'row) (sheet-rows sheet) (sheet-columns sheet))))
+    (and (integer? at) (>= at 0) (<= at limit)
+         (let* ((sources (sheet-sources sheet))
+                (relocate (lambda (r) (ref-after-insert r axis at)))
+                ;; As in move-line!: build the whole new table first, since the
+                ;; shift maps cells onto keys that are still in use.
+                (moved (hash-map->list
+                        (lambda (r text)
+                          (cons (relocate r) (rewrite-refs text relocate '())))
+                        sources)))
+           (hash-clear! sources)
+           (for-each (lambda (entry) (hash-set! sources (car entry) (cdr entry)))
+                     moved)
+           (if (eq? axis 'row)
+               (set-sheet-rows! sheet (+ limit 1))
+               (set-sheet-columns! sheet (+ limit 1)))
+           (invalidate-sheet! sheet)
+           #t))))
 
 
 ;;;
@@ -636,9 +701,26 @@ number->string is exact about doubles -- (* 7 19.99) really is
 
 (define (alist->sheet! sheet alist)
   (hash-clear! (sheet-sources sheet))
+  ;; Grow to whatever the file needs.  A sheet that has had rows or columns
+  ;; inserted into it is bigger than a fresh one, and reading it back into a
+  ;; sheet of the default size would quietly drop the far edge of it.
   (for-each (lambda (entry)
               (let ((r (name->ref (car entry))))
-                (when (and r (valid-ref? sheet r) (string? (cdr entry)))
+                (when (and r (string? (cdr entry)))
+                  (grow-to-fit! sheet r)
                   (hash-set! (sheet-sources sheet) r (cdr entry)))))
             alist)
   (invalidate-sheet! sheet))
+
+(define (grow-sheet! sheet rows columns)
+  "Make the sheet at least ROWS by COLUMNS.  A sheet only ever grows: opening a
+smaller one into it leaves the empty room at the edges, which costs nothing."
+  (when (> rows (sheet-rows sheet)) (set-sheet-rows! sheet rows))
+  (when (> columns (sheet-columns sheet)) (set-sheet-columns! sheet columns)))
+
+(define (grow-to-fit! sheet r)
+  "Make the sheet big enough to hold reference R."
+  (when (>= (ref-row r) (sheet-rows sheet))
+    (set-sheet-rows! sheet (+ (ref-row r) 1)))
+  (when (>= (ref-column r) (sheet-columns sheet))
+    (set-sheet-columns! sheet (+ (ref-column r) 1))))

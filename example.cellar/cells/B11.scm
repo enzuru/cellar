@@ -1,0 +1,1 @@
+(string-upcase A4)

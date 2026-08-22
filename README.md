@@ -24,10 +24,12 @@ nix develop      # Guile, G-Golf, GTK4, libadwaita, GtkSourceView, blueprint-com
 make run
 ```
 
-Open a sheet at startup with `make run FILE=example.cellar`, or build a
-standalone wrapper with `nix build` and run `./result/bin/cellar`.
+With no sheet named it opens on a start screen: open a sheet, make one, or take
+a scratch sheet that lives nowhere until you save it. Open one straight away
+with `make run FILE=example.cellar`, or build a standalone wrapper with
+`nix build` and run `./result/bin/cellar`.
 
-Run the model's test suite — it needs no display — with `make check`.
+Run the test suites — they need no display — with `make check`.
 
 Both `make run` and `./result/bin/cellar` give you a window carrying the
 desktop's fallback icon. That is expected: the icon appears only once Cellar is
@@ -127,6 +129,32 @@ are computed rather than written down — `(range 'A1 (corner-of my-table))` —
 is the case this cannot see as a rectangle; each literal reference in it still
 follows its own cell.
 
+## Adding rows and columns
+
+Right-click a row number in the gutter or a column header and take one of
+*Insert Row Before*, *Insert Row After*, *Insert Column Before* or *Insert
+Column After*. The right-click picks the line under the pointer before the menu
+opens, so what you point at is what you act on, and it stays selected afterwards
+so you can see what happened.
+
+Ctrl+Alt with an arrow key does the same four things to the active cell, and so
+does the main menu. The sheet grows by a line each time; it never runs out of
+room at the bottom or the right the way a fixed grid would.
+
+An insert shifts the cells below or right of it, and rewrites references exactly
+as a move does — a sheet means after an insert what it meant before, and the row
+that was `(* B2 C2)` still multiplies the same two cells once it has become
+`(* B3 C3)`. The active cell stays on the cell it was on, so opening a row above
+it carries it down.
+
+Ranges are rectangles here too, and here the rectangle grows: a row opened
+inside `(sum (range 'A1 'A3))` makes it `(sum (range 'A1 'A4))`, so whatever you
+write in the new row is taken into the subtotal. A row opened above the range
+pushes the whole range down instead, and one opened below it leaves it alone.
+
+A sheet grows to fit what is read into it, so a file saved after an insert opens
+at the size it was saved at rather than being trimmed back to the default 100×26.
+
 ## Keyboard
 
 |Key                                |Action                    |
@@ -137,6 +165,8 @@ follows its own cell.
 |Delete                             |Clear the active cell     |
 |Ctrl+Shift+Up/Down                 |Move the active row       |
 |Ctrl+Shift+Left/Right              |Move the active column    |
+|Ctrl+Alt+Up/Down                   |Insert a row before/after |
+|Ctrl+Alt+Left/Right                |Insert a column before/after|
 |Ctrl+R                             |Recalculate               |
 |Ctrl+O / Ctrl+S / Ctrl+Shift+S     |Open / Save / Save As     |
 |Ctrl+Q                             |Quit                      |
@@ -146,7 +176,9 @@ follows its own cell.
 GTK4 ships no spreadsheet widget, and this project did not write one in C. The
 grid is a `GtkColumnView`: one `GtkColumnViewColumn` per spreadsheet column,
 each with a `GtkSignalListItemFactory` whose `setup` and `bind` callbacks close
-over that column's index.
+over a one-element box holding that column's index — a box rather than the
+number itself, because inserting a column renumbers every column to its right
+and there is nowhere to tell a callback that was installed once.
 
 The interesting part is that the list model holds no data. It is a
 `GtkStringList` of row numbers whose only job is to give the view the right row
@@ -189,25 +221,59 @@ data/dev.enzuru.Cellar.desktop  the desktop entry; the file name is the applicat
 data/icons/hicolor/  the application icon, full colour and symbolic
 src/cellar/gi.scm    all GObject Introspection imports, in one place
 src/cellar/model.scm the sheet: sources, evaluation, references — no GTK
+src/cellar/store.scm sheets on disk: the folder format — no GTK
 src/cellar/grid.scm  the GtkColumnView spreadsheet
 src/cellar/editor.scm the code editor and its live result preview
-src/cellar/main.scm  application, actions, files
+src/cellar/main.scm  application, actions, the start screen
 tests/model-test.scm headless tests for the model
+tests/store-test.scm headless tests for the on-disk format
 tests/gui-smoke.sh   drives the real UI under Xvfb (`make smoke`)
+tests/gui-start-smoke.sh  the start screen, making a sheet, saving it
 ```
 
-`src/cellar/model.scm` deliberately has no GTK dependency, which is why the test
-suite can run without a display.
+`src/cellar/model.scm` and `src/cellar/store.scm` deliberately have no GTK
+dependency, which is why the test suites can run without a display.
 
 ## File format
 
-A sheet is a readable Scheme alist of cell name to source text, so it diffs
-well and you can edit it by hand:
+A sheet is a folder, not a file. Every cell that holds anything is one small
+file of Guile source under `cells/`, named for the cell, and a primary file at
+the top holds what is true of the sheet rather than of any one cell.
+
+```
+budget.cellar/
+  sheet.scm
+  cells/
+    A1.scm        "Qty"
+    A2.scm        7
+    D6.scm        (sum (range 'D2 'D4))
+  .git/
+```
 
 ```scheme
-;; A Cellar sheet: an alist of cell name to Guile source.
-(("A1" . "10") ("A2" . "32") ("A3" . "(+ A1 A2)"))
+;; A Cellar sheet. The cells are in cells/, one file each.
+((format . 1)
+ (rows . 102)
+ (columns . 28)
+ (widths (1 . 181)))
 ```
+
+The point of it is version control. A cell already holds source text, so giving
+each one a file makes an edit to a cell a one-line diff, a cell's history
+`git log -p cells/D6.scm`, and two people editing different corners of a sheet a
+merge rather than a conflict. *New Sheet* offers to `git init` the folder for
+you, ticked by default; nothing here commits on your behalf after that, and the
+repository is yours to manage.
+
+The cost is that a cell's name is its position, so inserting a row renames every
+file below it and rewrites every reference to them. That is a loud diff, but an
+honest one: the sheet really did change shape, and the references really did all
+change with it.
+
+Only files named exactly as a cell would be — `A1.scm`, `AA30.scm` — are read as
+cells, and only those are ever deleted by a save. A `README.md` beside them, or a
+`helpers.scm` in `cells/`, is yours and is left alone. A sheet can be opened by
+its folder or by the primary file inside it.
 
 ## Notes on G-Golf
 
@@ -275,8 +341,19 @@ the edge of the sheet says so in a toast, and dragging the edge of a header
 still resizes the column instead of moving it. The same run colours a cell from
 the editor, in a colour the palette has never seen, which is the case that
 reloads the grid's CSS provider while the grid is on screen.
-Save/Open are the exception: each link was checked separately (the async
-callback fires and returns a `GFile`, `get-path` yields a string, and the
-save/load round-trip is covered by `make check`), but the four were never driven
-together in one automated run, because `GtkFileDialog` hands off to the desktop
-portal and its window cannot be scripted from a test harness.
+The folder format is covered twice over. `make check` writes real directories
+in a temporary place and reads them back: the round trip, a cleared cell losing
+its file, a moved row leaving none behind, and a `README.md` or a stray
+`helpers.scm` in `cells/` surviving a save untouched. `tests/gui-start-smoke.sh`
+then drives the same thing through the application — the start screen, *New
+Sheet* with its git checkbox, writing a cell, saving — and reads the resulting
+folder off disk rather than photographing it, so the assertions are on files
+rather than on pixels.
+
+Choosing a folder is the exception. Both *Open Sheet…* and the location button
+in the New Sheet dialog hand off to the desktop portal, whose window cannot be
+scripted from a test harness; each link there was checked separately (the async
+callback fires and returns a `GFile`, and `get-path` yields a string). That is
+why the New Sheet dialog fills its location in for you rather than making you
+pick one, and why a sheet named on the command line opens without a dialog at
+all: both paths stay testable.

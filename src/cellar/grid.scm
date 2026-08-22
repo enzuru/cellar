@@ -30,6 +30,10 @@
             grid-refresh!
             grid-move-active!
             grid-move-line!
+            grid-insert-line!
+            grid-sync-size!
+            grid-column-widths
+            grid-set-column-widths!
             grid-focus!))
 
 ;; GTK_INVALID_LIST_POSITION -- what get-position returns for an unbound cell.
@@ -39,7 +43,8 @@
 (define %gutter-width 60)
 
 (define-record-type <grid>
-  (%make-grid view sheet cells active on-select on-activate titles drag)
+  (%make-grid view sheet cells active on-select on-activate titles drag
+              row-list row-count columns menu)
   grid?
   (view grid-view)
   (sheet grid-sheet)
@@ -50,11 +55,23 @@
   (active grid-active %set-grid-active!)
   (on-select grid-on-select)
   (on-activate grid-on-activate)
-  ;; The column header widgets, in column order -- GTK's, not ours; see
-  ;; `install-header-drag!'.
+  ;; The column header widgets, each paired with its column's index box.  A
+  ;; pairing rather than an order: GtkColumnView adds an inserted column's
+  ;; header at the end of the header row whatever the column's position, so
+  ;; the header row is not in column order.  See `install-header-drag!'.
   (titles grid-titles set-grid-titles!)
   ;; The drag in progress, or #f.
-  (drag grid-drag set-grid-drag!))
+  (drag grid-drag set-grid-drag!)
+  ;; The GtkStringList standing in for the rows, and how many entries it has:
+  ;; the view grows a row by growing this.  GtkStringList can be counted
+  ;; through GListModel, but not from here -- G-Golf does not marshal it --
+  ;; so the count is kept alongside.
+  (row-list grid-row-list)
+  (row-count grid-row-count set-grid-row-count!)
+  ;; The sheet's columns as (index . view-column) pairs, in column order.
+  (columns grid-columns set-grid-columns!)
+  ;; The GtkPopoverMenu a right-click on the gutter or a header opens, or #f.
+  (menu grid-menu set-grid-menu!))
 
 (define-record-type <drag>
   (make-drag axis from widget start-x start-y target)
@@ -69,23 +86,32 @@
   (start-y drag-start-y)
   (target drag-target set-drag-target!))
 
-(define (make-grid view sheet on-select on-activate)
+
+;; A column's index is not fixed for the life of the column: inserting a column
+;; shifts every column to its right one place along.  The factory callbacks and
+;; the header gesture are installed once and there is nowhere to tell them, so
+;; they close over a box that an insert renumbers rather than over the number.
+(define (make-column-index n) (list n))
+(define (column-index box) (car box))
+(define (set-column-index! box n) (set-car! box n))
+
+(define (make-grid view sheet line-menu on-select on-activate)
   "Turn VIEW, a GtkColumnView, into a grid over SHEET.
+LINE-MENU is the GMenuModel offered when a row number or a column header is
+right-clicked, or #f for no menu at all.
 ON-SELECT is called with a reference whenever the active cell changes.
 ON-ACTIVATE is called with a reference when a cell is double-clicked or
 activated from the keyboard."
-  (let ((grid (%make-grid view sheet '() (make-ref 0 0) on-select on-activate
-                          '() #f)))
-    (set-model view (gtk-no-selection-new (row-model sheet)))
+  (let* ((rows (row-model sheet))
+         (grid (%make-grid view sheet '() (make-ref 0 0) on-select on-activate
+                           '() #f rows (sheet-rows sheet) '() #f)))
+    (set-model view (gtk-no-selection-new rows))
+    (install-line-menu! grid line-menu)
     ;; A narrow leading column of row numbers, standing in for the row headers
     ;; GtkColumnView does not have.
-    (append-column view (make-column grid "" -1 %gutter-width))
-    (for-each (lambda (column)
-                (append-column view
-                               (make-column grid
-                                            (column->name column)
-                                            column
-                                            %column-width)))
+    (append-column view
+                   (make-column grid (make-column-index -1) "" %gutter-width))
+    (for-each (lambda (column) (add-column! grid column))
               (iota (sheet-columns sheet)))
     (install-key-handling grid)
     ;; The header widgets may not exist yet; if they do not, realise will do it.
@@ -101,15 +127,15 @@ model exists only to give the view its row count."
               (iota (sheet-rows sheet)))
     model))
 
-(define (make-column grid title column width)
+(define (make-column grid index title width)
   (let ((factory (make <gtk-signal-list-item-factory>)))
     (connect factory 'setup
-             (lambda (factory cell) (setup-cell grid column cell)))
+             (lambda (factory cell) (setup-cell grid index cell)))
     (connect factory 'bind
-             (lambda (factory cell) (bind-cell grid column cell)))
+             (lambda (factory cell) (bind-cell grid index cell)))
     (let ((view-column (gtk-column-view-column-new title factory)))
       (set-fixed-width view-column width)
-      (set-resizable view-column (>= column 0))
+      (set-resizable view-column (>= (column-index index) 0))
       view-column)))
 
 
@@ -117,14 +143,17 @@ model exists only to give the view its row count."
 ;;; Cell widgets
 ;;;
 
-(define (setup-cell grid column cell)
-  ;; The label fills its cell -- its padding is in the stylesheet rather than
-  ;; margins here, so that a cell's background colour reaches the cell's edges.
-  (let ((label (make <gtk-label>
-                 #:hexpand #t
-                 #:xalign (if (< column 0) 0.5 0.0)
-                 #:ellipsize 'end
-                 #:single-line-mode #t)))
+(define (setup-cell grid index cell)
+  ;; Whether this is the gutter or a cell of the sheet is settled here and for
+  ;; good; only the column's number can change under it.  The label fills its
+  ;; cell -- its padding is in the stylesheet rather than margins here, so that
+  ;; a cell's background colour reaches the cell's edges.
+  (let* ((column (column-index index))
+         (label (make <gtk-label>
+                  #:hexpand #t
+                  #:xalign (if (< column 0) 0.5 0.0)
+                  #:ellipsize 'end
+                  #:single-line-mode #t)))
     (add-css-class label (if (< column 0) "cellar-gutter" "cellar-cell"))
     (set-child cell label)
     (if (< column 0)
@@ -132,18 +161,23 @@ model exists only to give the view its row count."
         ;; holds no data, so dragging it can only mean "move this row".
         (begin
           (gtk-widget-set-cursor-from-name label "grab")
-          (install-row-drag! grid cell label))
+          (install-row-drag! grid cell label)
+          (install-line-click! grid label 'row
+                               (lambda ()
+                                 (let ((position (get-position cell)))
+                                   (and (live-position? grid position)
+                                        position)))))
         (let ((gesture (gtk-gesture-click-new)))
           (connect gesture 'pressed
                    (lambda (gesture n-press x y)
-                     (cell-pressed grid column cell n-press)))
+                     (cell-pressed grid index cell n-press)))
           (add-controller label gesture)))
-    (set-grid-cells! grid (cons (list cell label column) (grid-cells grid)))))
+    (set-grid-cells! grid (cons (list cell label index) (grid-cells grid)))))
 
-(define (bind-cell grid column cell)
+(define (bind-cell grid index cell)
   (let ((position (get-position cell)))
     (when (live-position? grid position)
-      (paint-cell grid (get-child cell) column position))))
+      (paint-cell grid (get-child cell) (column-index index) position))))
 
 (define (live-position? grid position)
   (and (< position %invalid-position)
@@ -228,10 +262,14 @@ model exists only to give the view its row count."
 
 (define (grid-refresh! grid)
   "Repaint every realised cell. Called after the sheet changes."
+  ;; A column added since the last refresh has a header widget by now, which it
+  ;; had not when it was inserted -- GtkColumnView builds those on the next
+  ;; layout pass -- so this is where it is given its drag gesture.
+  (install-header-drag! grid)
   (for-each (lambda (entry)
               (let ((cell (first entry))
                     (label (second entry))
-                    (column (third entry)))
+                    (column (column-index (third entry))))
                 (let ((position (get-position cell)))
                   (when (live-position? grid position)
                     (paint-cell grid label column position)))))
@@ -242,10 +280,10 @@ model exists only to give the view its row count."
 ;;; Selection
 ;;;
 
-(define (cell-pressed grid column cell n-press)
+(define (cell-pressed grid index cell n-press)
   (let ((position (get-position cell)))
     (when (live-position? grid position)
-      (let ((r (make-ref position column)))
+      (let ((r (make-ref position (column-index index))))
         (grid-set-active! grid r)
         ;; The whole point of the app: a second click opens the editor.
         (when (>= n-press 2)
@@ -293,6 +331,109 @@ Returns #t when the sheet changed."
            ((grid-on-select grid) (grid-active grid))
            #t))))
 
+
+;;;
+;;; Adding a row or a column
+;;;
+
+;; As with a move, the sheet does the work that matters -- it shifts the cells
+;; and rewrites the references inside them -- and the view is brought up to
+;; match afterwards.  A row is one more entry in the list model.  A column is
+;; one more GtkColumnViewColumn, inserted in place, after which every column
+;; from there rightwards answers to a new index and a new letter.
+
+(define (grid-insert-line! grid axis where)
+  "Open an empty row (AXIS 'row) or column (AXIS 'column) at the active cell.
+WHERE is 'before or 'after.  The active cell stays on the cell it was on, so an
+insert above it carries it down.  Returns #t when the sheet changed."
+  (let* ((sheet (grid-sheet grid))
+         (active (grid-active grid))
+         (at (+ (if (eq? axis 'row) (ref-row active) (ref-column active))
+                (if (eq? where 'before) 0 1))))
+    (and (if (eq? axis 'row)
+             (insert-row! sheet at)
+             (insert-column! sheet at))
+         (begin
+           (if (eq? axis 'row)
+               (add-row! grid)
+               (add-column! grid at))
+           (%set-grid-active! grid (ref-after-insert active axis at))
+           (grid-refresh! grid)
+           ((grid-on-select grid) (grid-active grid))
+           (scroll-to-row grid (ref-row (grid-active grid)))
+           #t))))
+
+(define (add-row! grid)
+  "One more row in the view.  The strings in the model are never read, so where
+the entry goes does not matter -- only how many there are."
+  (gtk-string-list-append (grid-row-list grid) "row")
+  (set-grid-row-count! grid (+ 1 (grid-row-count grid))))
+
+(define (add-column! grid at)
+  "Give the view a column for sheet column AT, renumbering the ones it displaces."
+  (let ((index (make-column-index at)))
+    (for-each (lambda (entry)
+                (when (>= (column-index (car entry)) at)
+                  (set-column-index! (car entry) (+ 1 (column-index (car entry))))))
+              (grid-columns grid))
+    (let ((view-column (make-column grid index "" %column-width)))
+      (set-grid-columns! grid
+                         (list-insert (grid-columns grid) at
+                                      (cons index view-column)))
+      ;; One past AT: the view's first column is the row gutter, which is no
+      ;; column of the sheet.
+      (gtk-column-view-insert-column (grid-view grid) (+ at 1) view-column))
+    (reletter-columns! grid)))
+
+(define (reletter-columns! grid)
+  "Title every column with the letter its index now calls for."
+  (for-each (lambda (entry)
+              (gtk-column-view-column-set-title
+               (cdr entry) (column->name (column-index (car entry)))))
+            (grid-columns grid)))
+
+(define (list-insert lst k item)
+  (let loop ((rest lst) (i 0) (acc '()))
+    (cond ((= i k) (append (reverse acc) (list item) rest))
+          ((null? rest) (append (reverse acc) (list item)))
+          (else (loop (cdr rest) (+ i 1) (cons (car rest) acc))))))
+
+(define (grid-column-widths grid)
+  "The columns whose width is not the default, as an alist of column index to
+pixels.  Dragging the edge of a header sets the column's fixed width, so this
+is what the user has actually done to the sheet -- and only that, so that a
+sheet nobody has resized carries no widths at all."
+  (filter-map (lambda (entry)
+                (let ((width (gtk-column-view-column-get-fixed-width
+                              (cdr entry))))
+                  (and (not (= width %column-width))
+                       (cons (column-index (car entry)) width))))
+              (grid-columns grid)))
+
+(define (grid-set-column-widths! grid widths)
+  "Set the columns from WIDTHS, an alist of column index to pixels.  A column
+the alist says nothing about, or nothing sensible, keeps the width it has."
+  (for-each (lambda (entry)
+              (let ((width (assv-ref widths (column-index (car entry)))))
+                (when (and (integer? width) (> width 0))
+                  (set-fixed-width (cdr entry) width))))
+            (grid-columns grid)))
+
+(define (grid-sync-size! grid)
+  "Grow the view to the size of the sheet, which loading a file may have
+changed.  Sheets only ever grow, so there is nothing here to take away."
+  (let ((sheet (grid-sheet grid)))
+    (let loop ()
+      (when (< (grid-row-count grid) (sheet-rows sheet))
+        (add-row! grid)
+        (loop)))
+    (let loop ()
+      (let ((shown (length (grid-columns grid))))
+        (when (< shown (sheet-columns sheet))
+          (add-column! grid shown)
+          (loop))))))
+
+
 (define (scroll-to-row grid row)
   ;; gtk_column_view_scroll_to is GTK 4.12+; if the marshalling ever fails we
   ;; would rather not move the selection than crash the app.
@@ -303,6 +444,64 @@ Returns #t when the sheet changed."
 
 (define (grid-focus! grid)
   (grab-focus (grid-view grid)))
+
+
+;;;
+;;; The context menu
+;;;
+
+;; Right-clicking a row number or a column header offers the four inserts.  The
+;; menu items are the application's own actions and those work on the active
+;; cell, so a right-click picks its line first, the way a left-click would:
+;; what you point at is what you act on, and it is left selected afterwards so
+;; you can see what happened.
+;;
+;; One popover serves the whole grid.  It is parented to the view rather than
+;; to whatever was clicked, because the cell widgets under the pointer are
+;; GtkColumnView's to recycle, and points at the click through the view's own
+;; coordinates.
+
+(define (install-line-menu! grid model)
+  (when model
+    (let ((menu (gtk-popover-menu-new-from-model model)))
+      (set-has-arrow menu #f)
+      (set-parent menu (grid-view grid))
+      (set-grid-menu! grid menu))))
+
+(define (install-line-click! grid widget axis locate)
+  "Open the line menu when WIDGET is right-clicked.  LOCATE answers with the
+row or column WIDGET stands for, or #f when it stands for nothing."
+  (let ((gesture (gtk-gesture-click-new)))
+    (gtk-gesture-single-set-button gesture 3)
+    (connect gesture 'pressed
+             (lambda (gesture n-press x y)
+               (let ((index (locate)))
+                 (when index
+                   (gtk-gesture-set-state gesture 'claimed)
+                   (select-line! grid axis index)
+                   (open-line-menu grid widget x y)))))
+    (add-controller widget gesture)))
+
+(define (select-line! grid axis index)
+  "Put the active cell on row or column INDEX, keeping the other half of the
+reference where it is."
+  (let ((active (grid-active grid)))
+    (grid-set-active! grid
+                      (if (eq? axis 'row)
+                          (make-ref index (ref-column active))
+                          (make-ref (ref-row active) index)))))
+
+(define (open-line-menu grid widget x y)
+  "Pop the menu up at X, Y in WIDGET."
+  (let ((menu (grid-menu grid))
+        (point (translate-point widget (grid-view grid) x y)))
+    (when (and menu point)
+      (gtk-popover-set-pointing-to menu (list (round-to-integer (first point))
+                                              (round-to-integer (second point))
+                                              1 1))
+      (gtk-popover-popup menu))))
+
+(define (round-to-integer x) (inexact->exact (round x)))
 
 
 ;;;
@@ -347,24 +546,50 @@ Returns #t when the sheet changed."
     (add-controller label gesture)))
 
 (define (install-header-drag! grid)
-  "Give each column header a drag gesture.
+  "Give each column header a drag gesture, and pair it with its column.
 
 The headers are GtkColumnView's own widgets and there is no API that hands
 them over -- a column has a title string, not a header factory -- so they are
 reached by walking the view: its first child is the header row, whose children
-are the column titles in column order, the leading one belonging to the row
-gutter."
-  (let ((header (get-first-child (grid-view grid))))
-    (when (and header (null? (grid-titles grid)))
-      (let loop ((title (get-first-child header)) (column -1) (titles '()))
-        (cond
-         ((not title) (set-grid-titles! grid (reverse titles)))
-         ((< column 0) (loop (get-next-sibling title) 0 titles))
-         (else
-          (install-column-drag! grid title column)
-          (loop (get-next-sibling title) (+ column 1) (cons title titles))))))))
+are the column titles, the leading one belonging to the row gutter.
 
-(define (install-column-drag! grid title column)
+Which header belongs to which column cannot be read off that walk, because
+GtkColumnView appends an inserted column's header to the end of the header row
+even though the column itself went in somewhere in the middle.  What can be
+relied on is that a header appears exactly once: so the headers already paired
+keep their columns, and a header seen for the first time takes the column that
+has not got one yet.  Headers come and go -- there are none until the view is
+realised, and inserting a column adds one -- so this runs more than once."
+  (let ((header (get-first-child (grid-view grid))))
+    (when header
+      (let* ((known (grid-titles grid))
+             (gutter (get-first-child header))
+             (widgets (if (not gutter)
+                          '()
+                          (let loop ((title (get-next-sibling gutter)) (acc '()))
+                            (if (not title)
+                                (reverse acc)
+                                (loop (get-next-sibling title) (cons title acc))))))
+             (kept (filter (lambda (entry) (memq (car entry) widgets)) known))
+             (free (filter (lambda (entry)
+                             (not (find (lambda (pair) (eq? (cdr pair) (car entry)))
+                                        kept)))
+                           (grid-columns grid))))
+        (set-grid-titles!
+         grid
+         (let loop ((rest widgets) (free free) (titles '()))
+           (cond
+            ((null? rest) (reverse titles))
+            ((assq (car rest) kept)
+             => (lambda (entry) (loop (cdr rest) free (cons entry titles))))
+            ((null? free) (reverse titles))
+            (else
+             (let ((index (car (car free))))
+               (install-column-drag! grid (car rest) index)
+               (loop (cdr rest) (cdr free)
+                     (cons (cons (car rest) index) titles)))))))))))
+
+(define (install-column-drag! grid title index)
   (let ((gesture (gtk-gesture-drag-new)))
     ;; Capture, not bubble. A header has gestures of GTK's own -- one of them
     ;; claims the sequence as soon as the pointer moves, and a bubble-phase
@@ -377,7 +602,7 @@ gutter."
                (if (< %resize-margin x (- (get-width title) %resize-margin))
                    (begin
                      (gtk-gesture-set-state gesture 'claimed)
-                     (begin-drag! grid 'column column title x y))
+                     (begin-drag! grid 'column (column-index index) title x y))
                    (gtk-gesture-set-state gesture 'denied))))
     (connect gesture 'drag-update
              (lambda (gesture offset-x offset-y)
@@ -387,7 +612,8 @@ gutter."
                (finish-drag! grid offset-x offset-y)))
     (connect gesture 'cancel
              (lambda (gesture sequence) (cancel-drag! grid)))
-    (add-controller title gesture)))
+    (add-controller title gesture)
+    (install-line-click! grid title 'column (lambda () (column-index index)))))
 
 (define (begin-drag! grid axis from widget x y)
   (set-grid-drag! grid (make-drag axis from widget x y from))
@@ -451,19 +677,37 @@ label under the answer as well as at the answer itself."
   "The column whose header contains X, given in WIDGET's coordinates.
 Past the last header this is the last column, and before the first, the first:
 a drag that overshoots means the end of the sheet, not nothing at all."
-  (let* ((titles (grid-titles grid))
-         (header (and (pair? titles) (get-parent (car titles))))
+  (let* ((entries (headers-across grid))
+         (header (and (pair? entries) (get-parent (car (car entries)))))
          (point (and header (translate-point widget header x 0.0))))
     (and point
          (let ((x (first point)))
-           (let loop ((rest titles) (column 0))
+           (let loop ((rest entries) (previous #f))
              (if (null? rest)
-                 (- (length titles) 1)
-                 (let ((origin (translate-point (car rest) header 0.0 0.0)))
+                 (and previous (column-index (cdr previous)))
+                 (let* ((entry (car rest))
+                        (origin (translate-point (car entry) header 0.0 0.0)))
                    (cond ((not origin) #f)
-                         ((< x (first origin)) (max 0 (- column 1)))
-                         ((< x (+ (first origin) (get-width (car rest)))) column)
-                         (else (loop (cdr rest) (+ column 1)))))))))))
+                         ((< x (first origin))
+                          (column-index (cdr (or previous entry))))
+                         ((< x (+ (first origin) (get-width (car entry))))
+                          (column-index (cdr entry)))
+                         (else (loop (cdr rest) entry))))))))))
+
+(define (headers-across grid)
+  "The (header . index) pairs in the order they lie across the screen, which
+is the order the columns are in and not the order the header row holds them."
+  (let ((entries (grid-titles grid)))
+    (if (null? entries)
+        entries
+        (let ((header (get-parent (car (car entries)))))
+          ;; (guile) sort: the bare name is a G-Golf generic here.
+          ((@ (guile) sort)
+           entries
+           (lambda (a b)
+             (let ((ax (translate-point (car a) header 0.0 0.0))
+                   (bx (translate-point (car b) header 0.0 0.0)))
+               (and ax bx (< (first ax) (first bx))))))))))
 
 (define (translate-point widget target x y)
   "X and Y, given in WIDGET's coordinates, in TARGET's instead, or #f."
@@ -487,7 +731,7 @@ a drag that overshoots means the end of the sheet, not nothing at all."
      (lambda (entry)
        (let* ((cell (first entry))
               (label (second entry))
-              (column (third entry))
+              (column (column-index (third entry)))
               (position (get-position cell))
               ;; Which row or column this cell is in, on the axis being
               ;; dragged. The gutter is column -1, so it is never a column
@@ -499,14 +743,15 @@ a drag that overshoots means the end of the sheet, not nothing at all."
          (set-css-class label "cellar-drag-target"
                         (and index target (= index target) (not (= target from))))))
      (grid-cells grid))
-    (let loop ((titles (grid-titles grid)) (column 0))
-      (unless (null? titles)
-        (let ((column? (and drag (not row?))))
-          (set-css-class (car titles) "cellar-drag-source"
-                         (and column? (= column from)))
-          (set-css-class (car titles) "cellar-drag-target"
-                         (and column? target (= column target) (not (= target from)))))
-        (loop (cdr titles) (+ column 1))))))
+    (for-each
+     (lambda (entry)
+       (let ((title (car entry))
+             (column (column-index (cdr entry)))
+             (column? (and drag (not row?))))
+         (set-css-class title "cellar-drag-source" (and column? (= column from)))
+         (set-css-class title "cellar-drag-target"
+                        (and column? target (= column target) (not (= target from))))))
+     (grid-titles grid))))
 
 (define (set-css-class widget class on?)
   (if on?

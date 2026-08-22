@@ -196,5 +196,75 @@
   (check "which says the same"
          "range: write the reference as a symbol, 'A1" (message "B2")))
 
+(format #t "-- inserting rows and columns~%")
+
+;; A new row is not just a blank line: what is below it moves down, and the
+;; references to what moved follow it, exactly as they do for a reordering.
+(let ((r (make-sheet 4 3)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (src name) (cell-source r (name->ref name)))
+  (define (shown-in name) (cell-display r (name->ref name)))
+  (put! "A1" "1")
+  (put! "A2" "2")
+  (put! "A3" "3")
+  (put! "C1" "(* A3 10)")
+
+  (check "insert-row! reports the insert" #t (insert-row! r 1))
+  (check "the sheet is a row taller" 5 (sheet-rows r))
+  (check "the rows above the new one stay put" "1" (src "A1"))
+  (check "the new row is empty" #f (src "A2"))
+  (check "the rows below it moved down" "2" (src "A3"))
+  (check "references follow the cells they name" "(* A4 10)" (src "C1"))
+  (check "so the value is unchanged" "30" (shown-in "C1"))
+
+  (check "insert-column! reports the insert" #t (insert-column! r 1))
+  (check "the sheet is a column wider" 4 (sheet-columns r))
+  (check "the columns to the left stay put" "1" (src "A1"))
+  (check "the new column is empty" #f (src "B1"))
+  (check "the columns to the right moved over" "(* A4 10)" (src "D1"))
+
+  (check "a row can be added at the end" #t (insert-row! r 5))
+  (check "which makes the sheet taller too" 6 (sheet-rows r))
+  (check "a row past the end is refused" #f (insert-row! r 7))
+  (check "a negative row is refused" #f (insert-row! r -1))
+  (check "and a column past the end is refused" #f (insert-column! r 5))
+  (check "the sheet is untouched by a refused insert" 6 (sheet-rows r)))
+
+;; A range is a rectangle, and inserting inside one grows it: the cells the
+;; user drew a box around are still in the box, and the new line is in it too.
+(let ((r (make-sheet 6 2)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (src name) (cell-source r (name->ref name)))
+  (define (shown-in name) (cell-display r (name->ref name)))
+  (put! "A1" "1")
+  (put! "A2" "2")
+  (put! "A3" "3")
+  (put! "B5" "(sum (range 'A1 'A3))")
+  (check "the range sums three cells to begin with" "6" (shown-in "B5"))
+
+  (insert-row! r 1)
+  (check "a row opened inside a range extends it"
+         "(sum (range 'A1 'A4))" (src "B6"))
+  (check "and the empty row adds nothing to the total" "6" (shown-in "B6"))
+  (put! "A2" "10")
+  (check "until it is filled in" "16" (shown-in "B6"))
+
+  (insert-row! r 0)
+  (check "a row opened above a range pushes it down, whole"
+         "(sum (range 'A2 'A5))" (src "B7"))
+  (check "with its total intact" "16" (shown-in "B7")))
+
+;; The sheet grows to fit what is read into it, so an inserted row survives a
+;; save and a load.
+(let ((r (make-sheet 4 2)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (put! "A4" "(+ 1 1)")
+  (insert-row! r 0)
+  (check "the cell moved down with the insert" "(+ 1 1)" (cell-source r (name->ref "A5")))
+  (let ((copy (make-sheet 4 2)))
+    (alist->sheet! copy (sheet->alist r))
+    (check "and a sheet too small to hold it grows on load" 5 (sheet-rows copy))
+    (check "keeping the cell where it was" "2" (cell-display copy (name->ref "A5")))))
+
 (format #t "~%~a~%" (if (zero? failures) "ALL TESTS PASSED" (format #f "~a FAILURE(S)" failures)))
 (exit (if (zero? failures) 0 1))
