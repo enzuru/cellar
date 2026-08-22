@@ -8,6 +8,9 @@
   #:use-module (cellar grid)
   #:use-module (cellar store)
   #:use-module (cellar editor)
+  #:use-module (cellar external)
+  #:use-module (cellar config)
+  #:use-module (cellar preferences)
   #:use-module (ice-9 match)
   #:use-module (ice-9 string-fun)
   #:duplicates (merge-generics replace warn-override-core warn last)
@@ -81,6 +84,7 @@ columnview.data-table > header > button {
   ;; GtkSourceView registers its GTypes here; without this the builder cannot
   ;; instantiate the GtkSourceView in editor.ui.
   (gtk-source-init)
+  (load-config!)
 
   (let* ((ui-directory (find-ui-directory))
          (builder (make <gtk-builder>))
@@ -150,12 +154,26 @@ columnview.data-table > header > button {
                            "empty — double-click a cell to write Guile")
                 (add-css-class source-label "dim-label")))))
 
+      (define (apply-edit r)
+        (lambda (text)
+          (set-cell-source! sheet r text)
+          (grid-refresh! grid)
+          (show-selection r)))
+
+      (define (edit-internally r)
+        (open-cell-editor ui-directory window sheet r (apply-edit r)))
+
       (define (edit-cell r)
-        (open-cell-editor ui-directory window sheet r
-                          (lambda (text)
-                            (set-cell-source! sheet r text)
-                            (grid-refresh! grid)
-                            (show-selection r))))
+        "Open the cell wherever the preferences say. If the external editor
+cannot be started we say so and fall back, rather than leaving a cell that
+cannot be edited at all."
+        (let ((command (effective-editor-command)))
+          (if command
+              (if (open-external-editor command sheet r (apply-edit r) notify)
+                  (notify (format #f "Editing ~a in ~a"
+                                  (ref->name r) (external-editor-name command)))
+                  (edit-internally r))
+              (edit-internally r))))
 
       (define (report-failure what key args)
         (notify (if (and (eq? key 'cellar-store-error) (pair? args))
@@ -335,6 +353,9 @@ columnview.data-table > header > button {
         (define-action "insert-column-after" '("<Control><Alt>Right")
                     (insert-line 'column 'after))
 
+        (define-action "preferences" '("<Control>comma")
+                    (lambda () (open-preferences ui-directory window)))
+
         (define-action "shortcuts" '("<Control>question")
                     (lambda () (show-shortcuts window)))
 
@@ -389,6 +410,11 @@ columnview.data-table > header > button {
   (if (string-suffix? ".cellar" name)
       name
       (string-append name ".cellar")))
+
+(define (external-editor-name command)
+  "The bare program name out of COMMAND, for a toast that reads as a sentence."
+  (let ((argv (editor-argv command "")))
+    (if (null? argv) command (basename (car argv)))))
 
 (define (one-line text)
   "Collapse TEXT onto a single line for the cell bar."
@@ -501,6 +527,7 @@ one picks the folder, and making one picks the folder to make it in."
     ("Ctrl+R" . "Recalculate the sheet")
     ("Ctrl+N / Ctrl+Shift+N" . "New sheet / New scratch sheet")
     ("Ctrl+O / Ctrl+S" . "Open a sheet folder / Save")
+    ("Ctrl+," . "Preferences")
     ("Ctrl+Q" . "Quit")))
 
 (define (show-shortcuts window)

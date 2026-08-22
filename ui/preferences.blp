@@ -1,0 +1,41 @@
+using Gtk 4.0;
+using Adw 1;
+
+Adw.PreferencesDialog preferences_dialog {
+  title: _("Preferences");
+
+  Adw.PreferencesPage {
+    icon-name: "document-edit-symbolic";
+    title: _("Editing");
+
+    Adw.PreferencesGroup editor_group {
+      title: _("Cell Editor");
+      description: _("By default a cell opens in Cellar's own editor. Point this at another program and Cellar will write the cell to a file, run the program on it, and take the file back as the cell when the program exits.");
+
+      Adw.SwitchRow external_editor_switch {
+        title: _("Use an external editor");
+        subtitle: _("Edit cells in another program instead of the built-in editor");
+      }
+
+      Adw.EntryRow external_editor_command {
+        title: _("Command");
+      }
+
+      Adw.ActionRow command_hint {
+        subtitle: _("%s in the command is replaced by the file; without one the file is added at the end. A terminal editor needs a terminal: xterm -e vim %s");
+        subtitle-lines: 4;
+
+        styles [
+          "dim-label",
+        ]
+      }
+
+      Adw.ActionRow override_row {
+        visible: false;
+        title: _("Overridden by CELLAR_EDITOR");
+        icon-name: "dialog-information-symbolic";
+        subtitle-lines: 3;
+      }
+    }
+  }
+}

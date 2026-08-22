@@ -22,6 +22,12 @@ mkdir -p "$OUT"
 
 export GDK_BACKEND=x11 GSK_RENDERER=cairo GUILE_AUTO_COMPILE=0
 
+# Preferences of its own. Step 10 turns on the external editor, and it has no
+# business doing that to the Cellar you actually use.
+export CELLAR_CONFIG="$OUT/config.scm"
+rm -f "$CELLAR_CONFIG"
+unset CELLAR_EDITOR
+
 # dbus-run-session, because GApplication is single-instance: with a Cellar
 # already running on your session bus this one would hand its activation to
 # that window and exit, leaving nothing here to photograph.
@@ -164,10 +170,13 @@ xdotool key Escape; sleep 2
 echo "11. about dialog"
 xdotool mousemove 957 27 click 1; sleep 3
 shot 25-menu
-# Click "About Cellar" by position. Never press Return here: the highlighted
-# item is "Open...", and that summons the portal file chooser onto your real
-# desktop.
-xdotool mousemove 907 579 click 1; sleep 4
+# Click "About Cellar" by position -- the last item, at the foot of the menu.
+# Never press Return here: the highlighted item is "New Sheet...", and that
+# opens a dialog instead. Check this offset against 25-menu.png whenever the
+# menu gains an item, or the click lands on the wrong one: until this was
+# fixed it had been landing on "Insert Column After", which quietly added a
+# column to the sheet the assertions below then read.
+xdotool mousemove 907 675 click 1; sleep 4
 shot 26-about
 xdotool key Escape; sleep 2
 
@@ -186,11 +195,42 @@ contains () { grep -q "$2" "$1"; }
 
 # The cell edited in step 4 has been carried around by every move since; it
 # is at E2 by now, which is the point -- its file followed it.
-expect "the edited cell is on disk under its new name" contains "$SHEET/cells/E2.scm" 'string-length'
-expect "the subtotal came through the reordering" contains "$SHEET/cells/E7.scm" 'range'
+expect "the edited cell is on disk under its new name" contains "$SHEET/cells/D2.scm" 'string-length'
+expect "the subtotal came through the reordering" contains "$SHEET/cells/D7.scm" 'range'
 expect "the sheet grew with the rows we added" contains "$SHEET/sheet.scm" 'rows . 10[0-9]'
 expect "the column we widened was remembered" contains "$SHEET/sheet.scm" 'widths ('
 expect "a cell nobody filled in has no file" test ! -f "$SHEET/cells/J20.scm"
+
+# The external editor. A real one would sit there waiting for a human, so this
+# stands in for it: a script that rewrites the file it is handed and exits, which
+# is all Cellar asks of an editor.
+echo "13. an external editor"
+EDITOR_SCRIPT="$OUT/fake-editor.sh"
+cat > "$EDITOR_SCRIPT" <<'SCRIPT'
+#!/usr/bin/env bash
+printf '(* 111 2)' > "$1"
+SCRIPT
+chmod +x "$EDITOR_SCRIPT"
+
+# Turn it on in the preferences: the switch, then the command beneath it. The
+# command row stays insensitive until the switch is on, so the order matters.
+xdotool key ctrl+comma; sleep 4
+xdotool mousemove 779 372 click 1; sleep 2
+xdotool mousemove 500 427 click 1; sleep 1
+xdotool type --delay 30 "$EDITOR_SCRIPT %s"
+sleep 2
+shot 28-preferences
+xdotool key Escape; sleep 3
+
+# Now Enter on a cell runs that script instead of opening Cellar's editor, and
+# what the script leaves in the file becomes the cell. Saving again puts that
+# where this script can read it, whichever cell the run has left active.
+xdotool mousemove 220 164 click 1; sleep 2
+xdotool key Return; sleep 8
+shot 29-external-editor-applied
+xdotool key ctrl+s; sleep 3
+expect "the external editor's work reached the sheet" \
+  grep -rq '(\* 111 2)' "$SHEET/cells"
 
 echo
 echo "app log (excluding harmless EGL noise):"

@@ -169,7 +169,47 @@ at the size it was saved at rather than being trimmed back to the default 100×2
 |Ctrl+Alt+Left/Right                |Insert a column before/after|
 |Ctrl+R                             |Recalculate               |
 |Ctrl+O / Ctrl+S / Ctrl+Shift+S     |Open / Save / Save As     |
+|Ctrl+,                             |Preferences               |
 |Ctrl+Q                             |Quit                      |
+
+## Using your own editor
+
+Cellar's editor is not the only one you can use. Under **Preferences**
+(Ctrl+,) there is a switch for *Use an external editor* and a command to go
+with it. With that on, opening a cell writes its source to a file, runs your
+command on that file, and takes the file back as the cell the moment the
+command exits — so the cell is whatever your editor left behind.
+
+`%s` in the command is where the file name goes. Without one it is added at the
+end, which is what most graphical editors want:
+
+|Command                        |What it opens                          |
+|-------------------------------|---------------------------------------|
+|`gnome-text-editor`            |Text Editor, with the file as its argument|
+|`gedit -w`                     |gedit, waiting for the window to close |
+|`code --wait`                  |VS Code, waiting for the tab to close  |
+|`emacsclient -c`               |a frame on a running Emacs             |
+|`xterm -e vim %s`              |vim, in a terminal of its own          |
+
+Two things to watch for. A terminal editor needs a terminal: `vim` on its own
+has nowhere to draw, so wrap it as above. And the editor has to *wait* — a
+command that returns as soon as it has handed the file to an already-running
+window gives Cellar an unedited file back. That is what `-w`, `--wait` and
+`emacsclient`'s foreground behaviour are for.
+
+The file is a `.scm` named after the cell — `B2.scm`, the same name it has under
+[`cells/`](#file-format) — so your editor will highlight it as Scheme. It lives
+in a temporary directory that Cellar removes afterwards, not in the sheet
+folder, so an editor that leaves a swap or backup file beside it cannot litter
+the sheet. Nothing blocks while you are in there: the sheet stays usable, and
+you can have several cells out with editors at once.
+
+The preference is saved in `~/.config/cellar/config.scm`. `CELLAR_EDITOR`
+overrides it for one run — set it to a command to force an external editor, or
+to the empty string to force the built-in one — and the preferences dialog says
+so when it is set. If the command cannot be started at all, Cellar says so in a
+toast and opens its own editor rather than leaving you with a cell you cannot
+edit.
 
 ## How the grid works
 
@@ -217,6 +257,7 @@ flake.nix            dev shell + package; builds G-Golf from source
 nix/g-golf.nix       G-Golf 0.8.7, patched for NixOS dlopen paths
 ui/cellar.blp        main window: header bar, cell bar, column view
 ui/editor.blp        the cell editor dialog (AdwDialog + GtkSourceView)
+ui/preferences.blp   the preferences dialog (AdwPreferencesDialog)
 data/dev.enzuru.Cellar.desktop  the desktop entry; the file name is the application id
 data/icons/hicolor/  the application icon, full colour and symbolic
 src/cellar/gi.scm    all GObject Introspection imports, in one place
@@ -224,15 +265,20 @@ src/cellar/model.scm the sheet: sources, evaluation, references — no GTK
 src/cellar/store.scm sheets on disk: the folder format — no GTK
 src/cellar/grid.scm  the GtkColumnView spreadsheet
 src/cellar/editor.scm the code editor and its live result preview
+src/cellar/config.scm preferences, and the command parsing behind them — no GTK
+src/cellar/external.scm handing a cell to an external editor
+src/cellar/preferences.scm the preferences dialog
 src/cellar/main.scm  application, actions, the start screen
 tests/model-test.scm headless tests for the model
 tests/store-test.scm headless tests for the on-disk format
+tests/config-test.scm headless tests for the preferences
 tests/gui-smoke.sh   drives the real UI under Xvfb (`make smoke`)
 tests/gui-start-smoke.sh  the start screen, making a sheet, saving it
 ```
 
-`src/cellar/model.scm` and `src/cellar/store.scm` deliberately have no GTK
-dependency, which is why the test suites can run without a display.
+`src/cellar/model.scm`, `src/cellar/store.scm` and `src/cellar/config.scm`
+deliberately have no GTK dependency, which is why the test suites can run
+without a display.
 
 ## File format
 
@@ -349,6 +395,15 @@ then drives the same thing through the application — the start screen, *New
 Sheet* with its git checkbox, writing a cell, saving — and reads the resulting
 folder off disk rather than photographing it, so the assertions are on files
 rather than on pixels.
+
+The external editor is covered by the last step of `make smoke`, which turns it
+on through the preferences dialog and edits a cell with a stand-in editor that
+rewrites the file and exits; the cell, everything computed from it, and the file
+the next save writes all come back changed. Two paths that step does not cover
+were driven by hand the same way: `CELLAR_EDITOR` overriding the saved
+preference, and a command that does not exist, which reports itself in a toast
+and falls back to the built-in editor. `make check` covers the rest headlessly —
+command splitting, `%s` substitution, and the preferences surviving a restart.
 
 Choosing a folder is the exception. Both *Open Sheet…* and the location button
 in the New Sheet dialog hand off to the desktop portal, whose window cannot be

@@ -22,6 +22,7 @@ run: ui
 check:
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/model-test.scm
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/store-test.scm
+	GUILE_AUTO_COMPILE=0 guile -L src -s tests/config-test.scm
 
 # Drives the real UI under a nested X server; needs xvfb-run, imagemagick, xdotool.
 smoke: ui

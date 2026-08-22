@@ -29,7 +29,9 @@
         "MenuModel"
         "File"
         "Cancellable"
-        "AsyncResult"))
+        "AsyncResult"
+        "Subprocess"
+        "SubprocessFlags"))
 
   (for-each (lambda (name) (gi-import-by-name "Pango" name))
       '("EllipsizeMode"))
@@ -81,7 +83,8 @@
         "FileFilter"
         "TextBuffer"
         "TextIter"
-        "TextView"))
+        "TextView"
+        "Editable"))
 
   (for-each (lambda (name) (gi-import-by-name "Adw" name))
       '("Application"
@@ -95,6 +98,12 @@
         "StatusPage"
         "Toast"
         "ToastOverlay"
+        "PreferencesDialog"
+        "PreferencesPage"
+        "PreferencesGroup"
+        "SwitchRow"
+        "EntryRow"
+        "ActionRow"
         "StyleManager"
         "Bin"))
 
