@@ -79,16 +79,41 @@ shot 8-column-moved
 xdotool key ctrl+shift+Left ctrl+shift+Left ctrl+shift+Left; sleep 3
 shot 9-edge
 
+# The same two moves with the mouse: rows are dragged by the number in the
+# gutter, columns by their header. Watch the Total column across both -- the
+# references move with the cells, so the subtotal must not change.
+echo "7. drag a row and a column"
+xdotool mousemove 35 189; sleep 1
+xdotool mousedown 1; sleep 1
+for y in 195 205 215 225 239; do xdotool mousemove 35 $y; sleep 0.3; done
+sleep 1; shot 10-row-dragging
+xdotool mouseup 1; sleep 2
+shot 11-row-dropped
+
+xdotool mousemove 220 111; sleep 1
+xdotool mousedown 1; sleep 1
+for x in 240 280 320 360 430; do xdotool mousemove $x 111; sleep 0.3; done
+sleep 1; shot 12-column-dragging
+xdotool mouseup 1; sleep 2
+shot 13-column-dropped
+
+# The edges of a header still resize the column rather than moving it.
+xdotool mousemove 273 111; sleep 1
+xdotool mousedown 1; sleep 1
+for x in 300 330 350; do xdotool mousemove $x 111; sleep 0.3; done
+xdotool mouseup 1; sleep 2
+shot 14-resized
+
 # The application icon, resolved by application id out of data/icons. The menu
 # button is at 957 -- 1070 is the close button, which quits the app instead.
-echo "7. about dialog"
+echo "8. about dialog"
 xdotool mousemove 957 27 click 1; sleep 3
-shot 10-menu
+shot 15-menu
 # Click "About Cellar" by position. Never press Return here: the highlighted
 # item is "Open...", and that summons the portal file chooser onto your real
 # desktop.
 xdotool mousemove 907 429 click 1; sleep 4
-shot 11-about
+shot 16-about
 xdotool key Escape; sleep 2
 
 echo

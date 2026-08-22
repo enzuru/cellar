@@ -64,10 +64,14 @@ reported as the cycle they form, e.g. `A1 -> B1 -> A1`.
 
 ## Reordering rows and columns
 
-Ctrl+Shift with an arrow key picks up the active cell's whole row or column and
-moves it one place; the same four moves are in the main menu. The active cell
-rides along, so you can hold the shortcut down and walk a row to where you want
-it.
+Drag a row by the number in the gutter, or a column by its header, and drop it
+where you want it: the line you are holding dims, the one it would land on
+lights up. The edges of a header still resize the column, as they always did.
+
+Ctrl+Shift with an arrow key does the same thing one place at a time, and the
+same four moves are in the main menu. Either way the active cell stays on the
+cell it was on, so you can hold the shortcut down and walk a row to where you
+want it.
 
 A move rewrites the sheet, not just the screen. Every reference in every cell is
 put through the same permutation as the cells themselves, so `(* B2 C2)` becomes
@@ -118,6 +122,15 @@ to 10,000 rows unchanged.
 Double-click detection is a `GtkGestureClick` added to each cell's label in
 `setup` (not `bind`, which would leak a controller on every scroll); the handler
 filters on `n_press = 2`.
+
+Dragging works the same way round. `GtkColumnView` can reorder its own columns,
+but that moves the view's columns and not the sheet behind them — the letters
+would come out in the wrong order and A1 would no longer be the cell in the
+corner — so the view's reordering stays off and the drag is a `GtkGestureDrag`
+on the gutter cell and on the column header, ending in the same `move-row!` and
+`move-column!` the keyboard uses. The row under the pointer is whatever
+`gtk_widget_pick` finds there, matched against the cells the factories handed
+us; the column is found by measuring the header widgets.
 
 ## Layout
 
@@ -179,6 +192,25 @@ Two things worth knowing if you extend this:
   pixels instead, but mutter 50 does not implement the other half, so the global
   is never advertised. Installing the desktop entry into a prefix the session
   already searches is the only thing that works.
+- GTK's drag-and-drop is out of reach from Guile: `gdk_content_provider_new_for_value`
+  takes a `GValue` and `gtk_drop_target_new` takes a `GType`, and G-Golf marshals
+  neither. Reordering therefore drags with a `GtkGestureDrag`, which suits it
+  better anyway — nothing is being transferred, and what is dragged never
+  leaves the process.
+- A gesture on a column header has to be in the **capture** phase. The header
+  is a `GtkColumnViewTitle` with gestures of GTK's own, and one of them claims
+  the sequence as soon as the pointer moves: a bubble-phase gesture there sees
+  the button press and then nothing else, which looks exactly like a drag that
+  silently does not work.
+- The header widgets are not the column's to hand out — a `GtkColumnViewColumn`
+  has a title string, not a header factory — so they are reached by walking the
+  view: its first child is the header row, whose children are the titles in
+  column order. They exist as soon as the columns are appended, before the view
+  is realised.
+- GObject identity survives the round trip: the same GObject always comes back
+  as the same GOOPS instance, so `eq?` is a reliable way to recognise a widget
+  handed back by `gtk_widget_pick`. That is what lets a drag find the cell under
+  the pointer without any coordinate arithmetic.
 - Packaging note: a wrapper must **set** `GI_TYPELIB_PATH`, not prepend to it.
   Inheriting a host path that points at a different glib makes GTK abort in
   `g_binding_class_init` at startup. Also note that glib's and pango's typelibs
@@ -191,9 +223,10 @@ navigation, row and column reordering, and the packaged `nix build` were all
 exercised end-to-end against a real GTK build, most of it by `make smoke`, which
 also confirms that the application icon resolves by application id and renders
 in the about dialog. Reordering was driven the same way, against
-`example.cellar`: rows and columns move, the active cell follows, the subtotal
-and tax hold their values across the move, and a move at the edge of the sheet
-says so in a toast.
+`example.cellar`, by keyboard and by mouse: rows and columns move, the active
+cell follows, the subtotal and tax hold their values across the move, a move at
+the edge of the sheet says so in a toast, and dragging the edge of a header
+still resizes the column instead of moving it.
 Save/Open are the exception: each link was checked separately (the async
 callback fires and returns a `GFile`, `get-path` yields a string, and the
 save/load round-trip is covered by `make check`), but the four were never driven

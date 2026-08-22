@@ -27,6 +27,7 @@
             invalidate-sheet!
             move-row!
             move-column!
+            ref-after-move
             sheet-refs
             sheet->alist
             alist->sheet!
@@ -206,8 +207,9 @@ changed, or #f when the move is a no-op or out of range."
 (define (ref-index axis r)
   (if (eq? axis 'row) (ref-row r) (ref-column r)))
 
-(define (relocate axis from to r)
-  "Where reference R lands when FROM moves to TO along AXIS."
+(define (ref-after-move r axis from to)
+  "Where reference R lands when FROM is moved to TO along AXIS.  The grid uses
+this to keep the active cell on the same cell across a move."
   (if (eq? axis 'row)
       (make-ref (shift-index (ref-row r) from to) (ref-column r))
       (make-ref (ref-row r) (shift-index (ref-column r) from to))))
@@ -223,7 +225,7 @@ changed, or #f when the move is a no-op or out of range."
               ;; permutation maps cells onto keys that are still in use.
               (moved (hash-map->list
                       (lambda (r text)
-                        (cons (relocate axis from to r)
+                        (cons (ref-after-move r axis from to)
                               (rewrite-refs text axis from to)))
                       sources)))
          (hash-clear! sources)
@@ -268,7 +270,7 @@ too."
 
 (define (rewrite-token token axis from to)
   (let ((r (name->ref token)))
-    (if r (ref->name (relocate axis from to r)) token)))
+    (if r (ref->name (ref-after-move r axis from to)) token)))
 
 (define %range-call
   (make-regexp
@@ -295,7 +297,7 @@ moved in."
                  (high (max (ref-index axis a) (ref-index axis b)))
                  (within? (and (>= from low) (<= from high)
                                (>= to low) (<= to high)))
-                 (corner (lambda (r) (if within? r (relocate axis from to r)))))
+                 (corner (lambda (r) (if within? r (ref-after-move r axis from to)))))
             (loop (match:end m)
                   (cons* (cons* (match:start m 1) (match:end m 1)
                                 (ref->name (corner a)))

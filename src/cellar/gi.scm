@@ -64,6 +64,8 @@
         "SingleSelection"
         "SelectionModel"
         "GestureClick"
+        "GestureDrag"
+        "PickFlags"
         "EventControllerKey"
         "ListScrollFlags"
         "ScrollInfo"

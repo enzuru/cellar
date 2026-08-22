@@ -39,7 +39,7 @@
 (define %gutter-width 60)
 
 (define-record-type <grid>
-  (%make-grid view sheet cells active on-select on-activate)
+  (%make-grid view sheet cells active on-select on-activate titles drag)
   grid?
   (view grid-view)
   (sheet grid-sheet)
@@ -49,14 +49,33 @@
   (cells grid-cells set-grid-cells!)
   (active grid-active %set-grid-active!)
   (on-select grid-on-select)
-  (on-activate grid-on-activate))
+  (on-activate grid-on-activate)
+  ;; The column header widgets, in column order -- GTK's, not ours; see
+  ;; `install-header-drag!'.
+  (titles grid-titles set-grid-titles!)
+  ;; The drag in progress, or #f.
+  (drag grid-drag set-grid-drag!))
+
+(define-record-type <drag>
+  (make-drag axis from widget start-x start-y target)
+  drag?
+  ;; 'row or 'column: which of the two the user has hold of.
+  (axis drag-axis)
+  (from drag-from)
+  ;; The widget the gesture is on, and where in it the drag started, so that a
+  ;; drag-update offset can be turned back into a point.
+  (widget drag-widget)
+  (start-x drag-start-x)
+  (start-y drag-start-y)
+  (target drag-target set-drag-target!))
 
 (define (make-grid view sheet on-select on-activate)
   "Turn VIEW, a GtkColumnView, into a grid over SHEET.
 ON-SELECT is called with a reference whenever the active cell changes.
 ON-ACTIVATE is called with a reference when a cell is double-clicked or
 activated from the keyboard."
-  (let ((grid (%make-grid view sheet '() (make-ref 0 0) on-select on-activate)))
+  (let ((grid (%make-grid view sheet '() (make-ref 0 0) on-select on-activate
+                          '() #f)))
     (set-model view (gtk-no-selection-new (row-model sheet)))
     ;; A narrow leading column of row numbers, standing in for the row headers
     ;; GtkColumnView does not have.
@@ -69,6 +88,9 @@ activated from the keyboard."
                                             %column-width)))
               (iota (sheet-columns sheet)))
     (install-key-handling grid)
+    ;; The header widgets may not exist yet; if they do not, realise will do it.
+    (install-header-drag! grid)
+    (connect view 'realize (lambda (view) (install-header-drag! grid)))
     grid))
 
 (define (row-model sheet)
@@ -105,12 +127,17 @@ model exists only to give the view its row count."
                  #:margin-end 6)))
     (add-css-class label (if (< column 0) "cellar-gutter" "cellar-cell"))
     (set-child cell label)
-    (when (>= column 0)
-      (let ((gesture (gtk-gesture-click-new)))
-        (connect gesture 'pressed
-                 (lambda (gesture n-press x y)
-                   (cell-pressed grid column cell n-press)))
-        (add-controller label gesture)))
+    (if (< column 0)
+        ;; The gutter is the row's handle: it is the one part of a row that
+        ;; holds no data, so dragging it can only mean "move this row".
+        (begin
+          (gtk-widget-set-cursor-from-name label "grab")
+          (install-row-drag! grid cell label))
+        (let ((gesture (gtk-gesture-click-new)))
+          (connect gesture 'pressed
+                   (lambda (gesture n-press x y)
+                     (cell-pressed grid column cell n-press)))
+          (add-controller label gesture)))
     (set-grid-cells! grid (cons (list cell label column) (grid-cells grid)))))
 
 (define (bind-cell grid column cell)
@@ -187,21 +214,27 @@ model exists only to give the view its row count."
 
 ;; Moving a whole row or column is a model operation -- the sheet rewrites the
 ;; references inside every cell so they follow the cells they name -- so all the
-;; grid does is ask for it and keep the active cell on the line that moved.
+;; grid does is ask for it, and then follow the cells on screen.
 (define (grid-move-line! grid axis delta)
   "Move the active cell's row (AXIS 'row) or column (AXIS 'column) DELTA places.
 Returns #t when the sheet changed."
-  (let* ((sheet (grid-sheet grid))
-         (active (grid-active grid))
-         (row? (eq? axis 'row))
-         (from (if row? (ref-row active) (ref-column active)))
-         (to (+ from delta)))
-    (and (if row? (move-row! sheet from to) (move-column! sheet from to))
-         (let ((moved (if row?
-                          (make-ref to (ref-column active))
-                          (make-ref (ref-row active) to))))
-           (grid-set-active! grid moved)
-           (scroll-to-row grid (ref-row moved))
+  (let* ((active (grid-active grid))
+         (from (if (eq? axis 'row) (ref-row active) (ref-column active))))
+    (and (apply-move! grid axis from (+ from delta))
+         (begin (scroll-to-row grid (ref-row (grid-active grid))) #t))))
+
+(define (apply-move! grid axis from to)
+  "Move a row or column in the sheet, keeping the active cell on its cell.
+Returns #t when the sheet changed."
+  (let ((sheet (grid-sheet grid)))
+    (and (if (eq? axis 'row)
+             (move-row! sheet from to)
+             (move-column! sheet from to))
+         (begin
+           (%set-grid-active! grid
+                              (ref-after-move (grid-active grid) axis from to))
+           (grid-refresh! grid)
+           ((grid-on-select grid) (grid-active grid))
            #t))))
 
 (define (scroll-to-row grid row)
@@ -214,6 +247,215 @@ Returns #t when the sheet changed."
 
 (define (grid-focus! grid)
   (grab-focus (grid-view grid)))
+
+
+;;;
+;;; Dragging a row or a column
+;;;
+
+;; GtkColumnView can reorder its own columns by dragging a header, but that
+;; moves the view's columns and not the sheet behind them: the letters would
+;; come out in the wrong order and A1 would no longer be the cell in the
+;; corner. So the view's own reordering stays off (`reorderable: false' in
+;; cellar.blp) and the drag is ours, ending in the same move-row! and
+;; move-column! the keyboard uses.
+;;
+;; It is a GtkGestureDrag rather than GTK's drag-and-drop, because DnD is out
+;; of reach from Guile: gdk_content_provider_new_for_value takes a GValue and
+;; gtk_drop_target_new takes a GType, and G-Golf marshals neither. Nothing is
+;; being transferred here anyway -- what is dragged never leaves the process --
+;; so a gesture, which needs no content at all, is the better fit regardless.
+
+;; Wide enough to keep clear of GTK's column resize handles, which live at the
+;; edges of the same header widget the drag gesture is on.
+(define %resize-margin 8)
+
+(define (install-row-drag! grid cell label)
+  (let ((gesture (gtk-gesture-drag-new)))
+    (connect gesture 'drag-begin
+             (lambda (gesture x y)
+               (let ((position (get-position cell)))
+                 (if (live-position? grid position)
+                     (begin
+                       (gtk-gesture-set-state gesture 'claimed)
+                       (begin-drag! grid 'row position label x y))
+                     (gtk-gesture-set-state gesture 'denied)))))
+    (connect gesture 'drag-update
+             (lambda (gesture offset-x offset-y)
+               (update-drag! grid offset-x offset-y)))
+    (connect gesture 'drag-end
+             (lambda (gesture offset-x offset-y)
+               (finish-drag! grid offset-x offset-y)))
+    (connect gesture 'cancel
+             (lambda (gesture sequence) (cancel-drag! grid)))
+    (add-controller label gesture)))
+
+(define (install-header-drag! grid)
+  "Give each column header a drag gesture.
+
+The headers are GtkColumnView's own widgets and there is no API that hands
+them over -- a column has a title string, not a header factory -- so they are
+reached by walking the view: its first child is the header row, whose children
+are the column titles in column order, the leading one belonging to the row
+gutter."
+  (let ((header (get-first-child (grid-view grid))))
+    (when (and header (null? (grid-titles grid)))
+      (let loop ((title (get-first-child header)) (column -1) (titles '()))
+        (cond
+         ((not title) (set-grid-titles! grid (reverse titles)))
+         ((< column 0) (loop (get-next-sibling title) 0 titles))
+         (else
+          (install-column-drag! grid title column)
+          (loop (get-next-sibling title) (+ column 1) (cons title titles))))))))
+
+(define (install-column-drag! grid title column)
+  (let ((gesture (gtk-gesture-drag-new)))
+    ;; Capture, not bubble. A header has gestures of GTK's own -- one of them
+    ;; claims the sequence as soon as the pointer moves, and a bubble-phase
+    ;; gesture here sees the press and then nothing at all.
+    (set-propagation-phase gesture 'capture)
+    (connect gesture 'drag-begin
+             (lambda (gesture x y)
+               ;; Near either edge the user is resizing the column, which is
+               ;; GTK's gesture on this same widget. Stay out of its way.
+               (if (< %resize-margin x (- (get-width title) %resize-margin))
+                   (begin
+                     (gtk-gesture-set-state gesture 'claimed)
+                     (begin-drag! grid 'column column title x y))
+                   (gtk-gesture-set-state gesture 'denied))))
+    (connect gesture 'drag-update
+             (lambda (gesture offset-x offset-y)
+               (update-drag! grid offset-x offset-y)))
+    (connect gesture 'drag-end
+             (lambda (gesture offset-x offset-y)
+               (finish-drag! grid offset-x offset-y)))
+    (connect gesture 'cancel
+             (lambda (gesture sequence) (cancel-drag! grid)))
+    (add-controller title gesture)))
+
+(define (begin-drag! grid axis from widget x y)
+  (set-grid-drag! grid (make-drag axis from widget x y from))
+  (show-drag grid))
+
+(define (update-drag! grid offset-x offset-y)
+  (let ((drag (grid-drag grid)))
+    (when drag
+      (let ((target (drag-target-at grid drag offset-x offset-y)))
+        (when target
+          (set-drag-target! drag target)
+          (show-drag grid))))))
+
+(define (finish-drag! grid offset-x offset-y)
+  (let ((drag (grid-drag grid)))
+    (when drag
+      (let ((target (or (drag-target-at grid drag offset-x offset-y)
+                        (drag-target drag))))
+        (set-grid-drag! grid #f)
+        (show-drag grid)
+        (apply-move! grid (drag-axis drag) (drag-from drag) target)))))
+
+(define (cancel-drag! grid)
+  (set-grid-drag! grid #f)
+  (show-drag grid))
+
+(define (drag-target-at grid drag offset-x offset-y)
+  "The row or column the pointer is over, OFFSET-X and OFFSET-Y into the drag."
+  (let ((x (+ (drag-start-x drag) offset-x))
+        (y (+ (drag-start-y drag) offset-y)))
+    (if (eq? (drag-axis drag) 'row)
+        (row-at grid (drag-widget drag) x y)
+        (column-at grid (drag-widget drag) x))))
+
+(define (row-at grid widget x y)
+  (let ((point (translate-point widget (grid-view grid) x y)))
+    (and point
+         (let ((entry (cell-at grid (first point) (second point))))
+           (and entry
+                (let ((position (get-position (first entry))))
+                  (and (live-position? grid position) position)))))))
+
+(define (cell-at grid x y)
+  "The (cell label column) entry under the point X, Y in view coordinates.
+
+gtk_widget_pick answers with whatever widget is deepest at that point, which
+is the cell widget GtkColumnView wraps our label in, so this looks at the
+label under the answer as well as at the answer itself."
+  (let loop ((widget (gtk-widget-pick (grid-view grid) x y '())) (depth 0))
+    (and widget
+         (< depth 3)
+         (or (entry-for grid widget)
+             (let ((child (get-first-child widget)))
+               (and child (entry-for grid child)))
+             (loop (get-parent widget) (+ depth 1))))))
+
+(define (entry-for grid widget)
+  (find (lambda (entry) (eq? (second entry) widget)) (grid-cells grid)))
+
+(define (column-at grid widget x)
+  "The column whose header contains X, given in WIDGET's coordinates.
+Past the last header this is the last column, and before the first, the first:
+a drag that overshoots means the end of the sheet, not nothing at all."
+  (let* ((titles (grid-titles grid))
+         (header (and (pair? titles) (get-parent (car titles))))
+         (point (and header (translate-point widget header x 0.0))))
+    (and point
+         (let ((x (first point)))
+           (let loop ((rest titles) (column 0))
+             (if (null? rest)
+                 (- (length titles) 1)
+                 (let ((origin (translate-point (car rest) header 0.0 0.0)))
+                   (cond ((not origin) #f)
+                         ((< x (first origin)) (max 0 (- column 1)))
+                         ((< x (+ (first origin) (get-width (car rest)))) column)
+                         (else (loop (cdr rest) (+ column 1)))))))))))
+
+(define (translate-point widget target x y)
+  "X and Y, given in WIDGET's coordinates, in TARGET's instead, or #f."
+  (call-with-values
+      (lambda () (gtk-widget-translate-coordinates widget target x y))
+    (lambda (ok . point)
+      (and ok (= (length point) 2) point))))
+
+
+;;;
+;;; What a drag looks like while it lasts
+;;;
+
+(define (show-drag grid)
+  "Dim the line being dragged and light up the one it would land on."
+  (let* ((drag (grid-drag grid))
+         (row? (and drag (eq? (drag-axis drag) 'row)))
+         (from (and drag (drag-from drag)))
+         (target (and drag (drag-target drag))))
+    (for-each
+     (lambda (entry)
+       (let* ((cell (first entry))
+              (label (second entry))
+              (column (third entry))
+              (position (get-position cell))
+              ;; Which row or column this cell is in, on the axis being
+              ;; dragged. The gutter is column -1, so it is never a column
+              ;; target, but it is part of every row.
+              (index (and drag
+                          (live-position? grid position)
+                          (if row? position column))))
+         (set-css-class label "cellar-drag-source" (and index (= index from)))
+         (set-css-class label "cellar-drag-target"
+                        (and index target (= index target) (not (= target from))))))
+     (grid-cells grid))
+    (let loop ((titles (grid-titles grid)) (column 0))
+      (unless (null? titles)
+        (let ((column? (and drag (not row?))))
+          (set-css-class (car titles) "cellar-drag-source"
+                         (and column? (= column from)))
+          (set-css-class (car titles) "cellar-drag-target"
+                         (and column? target (= column target) (not (= target from)))))
+        (loop (cdr titles) (+ column 1))))))
+
+(define (set-css-class widget class on?)
+  (if on?
+      (add-css-class widget class)
+      (remove-css-class widget class)))
 
 
 ;;;

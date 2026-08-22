@@ -33,6 +33,20 @@
 .cellar-cell.cellar-error {
   color: @error_color;
 }
+/* A row or column being dragged, and the place it would land. */
+.cellar-cell.cellar-drag-source, .cellar-gutter.cellar-drag-source {
+  opacity: 0.35;
+}
+.cellar-cell.cellar-drag-target, .cellar-gutter.cellar-drag-target {
+  background-color: alpha(@accent_bg_color, 0.30);
+  box-shadow: inset 0 0 0 1px @accent_bg_color;
+}
+columnview.data-table > header > button.cellar-drag-source {
+  opacity: 0.5;
+}
+columnview.data-table > header > button.cellar-drag-target {
+  background-color: alpha(@accent_bg_color, 0.30);
+}
 columnview.data-table > header > button {
   font-weight: bold;
 }
