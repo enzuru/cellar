@@ -24,9 +24,9 @@ nix develop      # Guile, G-Golf, GTK4, libadwaita, GtkSourceView, blueprint-com
 make run
 ```
 
-With no sheet named it opens on a start screen: open a sheet, make one, or take
-a scratch sheet, which Cellar gives a folder of its own out of the way. Open one
-straight away
+With no workbook named it opens on a start screen: open a workbook, make one, or
+take a scratch workbook, which Cellar gives a folder of its own out of the way.
+Open one straight away
 with `make run FILE=example.cellar`, or build a standalone wrapper with
 `nix build` and run `./result/bin/cellar`.
 
@@ -156,6 +156,27 @@ pushes the whole range down instead, and one opened below it leaves it alone.
 A sheet grows to fit what is read into it, so a file saved after an insert opens
 at the size it was saved at rather than being trimmed back to the default 100×26.
 
+## Sheets and tabs
+
+A `.cellar` folder is a **workbook**: several spreadsheets in one folder, and so
+several spreadsheets in one Git repository. Each is a tab, and each is a folder
+of its own under `sheets/`.
+
+**Add Sheet** (Ctrl+T) makes one, **Rename Sheet** (Ctrl+Shift+R) renames the
+folder along with the tab, and dragging a tab reorders them. Which tab you were
+on is remembered, so reopening a workbook comes back to the sheet you left.
+
+Closing a tab is deleting the sheet, because a tab *is* a sheet rather than a
+view of one — so it asks first, and refuses when it would leave the workbook
+with nothing in it. What it deletes is only what Cellar wrote: a `README` you
+left in a sheet's folder keeps the folder standing, empty of a sheet and so no
+longer a tab, rather than being taken down with it.
+
+Sheets do not see each other. A cell is evaluated in its own sheet's sandbox,
+and `A1` in one tab is nothing to do with `A1` in the next; what tabs give you
+is several spreadsheets under one history, not one spreadsheet in several
+pieces.
+
 ## Keyboard
 
 |Key                                |Action                    |
@@ -169,9 +190,13 @@ at the size it was saved at rather than being trimmed back to the default 100×2
 |Ctrl+Alt+Up/Down                   |Insert a row before/after |
 |Ctrl+Alt+Left/Right                |Insert a column before/after|
 |Ctrl+R                             |Recalculate               |
-|Ctrl+N / Ctrl+Shift+N              |New sheet / New scratch sheet|
-|Ctrl+O                             |Open a sheet folder       |
-|Ctrl+Shift+S                       |Copy this sheet elsewhere |
+|Ctrl+T                             |Add a sheet to this workbook|
+|Ctrl+Shift+R                       |Rename the sheet showing  |
+|Ctrl+W                             |Delete the sheet showing  |
+|Ctrl+Page Up/Page Down             |Move to the sheet before/after|
+|Ctrl+N / Ctrl+Shift+N              |New workbook / New scratch workbook|
+|Ctrl+O                             |Open a workbook folder    |
+|Ctrl+Shift+S                       |Copy this workbook elsewhere|
 |Ctrl+,                             |Preferences               |
 |Ctrl+Q                             |Quit                      |
 
@@ -189,21 +214,24 @@ much reason for an edit to sit in memory waiting to be flushed — least of all
 when the whole point of the layout is that `git diff` should tell you what
 changed.
 
-The traffic goes the other way too. Cellar watches the sheet folder, and
+The traffic goes the other way too. Cellar watches the whole workbook — every
+sheet's cells, every sheet's primary file, and the folder they sit in — and
 anything that changes a cell's file changes the cell: your editor, a
 `git checkout`, a script, another copy of Cellar. The grid reloads and the
-sheet recomputes, and a toast says why the numbers moved.
+sheet recomputes, and a toast says why the numbers moved. A `git checkout` that
+brings a sheet in or takes one away rebuilds the tabs.
 
 The one thing worth knowing is that this makes an edit immediate and permanent
 in the same breath. There is no undo, and never was; what there is instead is
-the `git init` checkbox on the New Sheet dialog, which is the honest way to get
-one for a folder of text files.
+the `git init` checkbox on the New Workbook dialog, which is the honest way to
+get one for a folder of text files.
 
-**Copy To…** (Ctrl+Shift+S) is what is left of Save As: it writes the sheet to
-a new folder and carries you on editing there, leaving the folder you came from
-as it stands. A **scratch sheet** (Ctrl+Shift+N) is an ordinary sheet in a
-folder Cellar picks, under `~/.local/share/cellar/scratch/`, so that starting
-one asks you nothing; Copy To is how it becomes a sheet you keep.
+**Copy To…** (Ctrl+Shift+S) is what is left of Save As: it writes every sheet of
+the workbook to a new folder and carries you on editing there, leaving the
+folder you came from as it stands. A **scratch workbook** (Ctrl+Shift+N) is an
+ordinary workbook in a folder Cellar picks, under
+`~/.local/share/cellar/scratch/`, so that starting one asks you nothing; Copy To
+is how it becomes a workbook you keep.
 
 ## Using your own editor
 
@@ -317,14 +345,31 @@ A sheet is a folder, not a file. Every cell that holds anything is one small
 file of Guile source under `cells/`, named for the cell, and a primary file at
 the top holds what is true of the sheet rather than of any one cell.
 
+A workbook is a folder of those, and the folder a repository is made of:
+
 ```
 budget.cellar/
-  sheet.scm
-  cells/
-    A1.scm        "Qty"
-    A2.scm        7
-    D6.scm        (sum (range 'D2 'D4))
+  workbook.scm
+  sheets/
+    Summary/
+      sheet.scm
+      cells/
+        A1.scm        "Qty"
+        A2.scm        7
+        D6.scm        (sum (range 'D2 'D4))
+    Q1/
+      sheet.scm
+      cells/
   .git/
+```
+
+```scheme
+;; A Cellar workbook. Each sheet is a folder under sheets/.
+((format . 2)
+ (sheets
+  "Summary"
+  "Q1")
+ (active . "Summary"))
 ```
 
 ```scheme
@@ -335,12 +380,33 @@ budget.cellar/
  (widths (1 . 181)))
 ```
 
+An entry to a line in both, so that adding a sheet, renaming one or dragging a
+tab is a one-line diff rather than a rewritten file.
+
+The index is a hint and the disk is the truth: which sheets exist is decided by
+which folders are there, and `workbook.scm` decides only what order the tabs
+come in. A sheet that arrives in somebody else's commit turns up as a tab rather
+than being ignored, and one a `git checkout` takes away leaves rather than being
+a tab over a folder that is not there. That is the most a file two people can
+edit at once should be trusted for.
+
+### Workbooks written before there were tabs
+
+A workbook from before tabs has its `sheet.scm` and `cells/` at the top of the
+folder and no `workbook.scm` above them. Cellar reads one **where it lies** — as
+a workbook of one sheet, in a tab named for the folder — and moves it into
+`sheets/` only when you add a second sheet and give it a reason to. The folder is
+renamed rather than copied, so Git sees a rename and `git log --follow` still
+walks back through a cell's history. Rearranging somebody's repository on the way
+to merely opening it would be a rude way to say hello.
+
 The point of it is version control. A cell already holds source text, so giving
 each one a file makes an edit to a cell a one-line diff, a cell's history
-`git log -p cells/D6.scm`, and two people editing different corners of a sheet a
-merge rather than a conflict. *New Sheet* offers to `git init` the folder for
-you, ticked by default; nothing here commits on your behalf after that, and the
-repository is yours to manage.
+`git log -p sheets/Summary/cells/D6.scm`, and two people editing different
+corners of a sheet a merge rather than a conflict. *New Workbook* offers to
+`git init` the folder for you, ticked by default — around the workbook rather
+than around any one sheet, which is the whole reason a workbook exists; nothing
+here commits on your behalf after that, and the repository is yours to manage.
 
 The cost is that a cell's name is its position, so inserting a row renames every
 file below it and rewrites every reference to them. That is a loud diff, but an
@@ -350,8 +416,9 @@ change with it.
 Only files named exactly as a cell would be — `A1.scm`, `AA30.scm` — are read as
 cells, and only those are ever written or deleted. A `README.md` beside them, or
 a `helpers.scm` in `cells/`, is yours and is left alone — including by the
-watcher, which reads the folder but only ever finds cells in it. A sheet can be
-opened by its folder or by the primary file inside it.
+watcher, which reads the folder but only ever finds cells in it. A workbook can
+be opened by its folder, by its `workbook.scm`, or by the `sheet.scm` of any
+sheet inside it.
 
 Because the folder is the sheet rather than a rendering of it, editing these
 files by hand is a supported way to use Cellar and not a way to corrupt it: see
@@ -428,9 +495,26 @@ in a temporary place and reads them back: the round trip, a cleared cell losing
 its file, a moved row leaving none behind, a `README.md` or a stray
 `helpers.scm` in `cells/` surviving a save untouched, one cell being written by
 itself, and a file whose contents are not changing keeping its mtime through a
-whole-sheet save. `tests/gui-start-smoke.sh` then drives the start screen
-through the application and reads the resulting folder off disk rather than
-photographing it — though see the note at the head of that file: from its third
+whole-sheet save. The workbook layer is covered the same way: adding, renaming,
+reordering and removing sheets; a duplicate name refused, including one
+differing only in case; a name a folder cannot have refused; a note left in a
+sheet keeping its folder standing when the sheet is deleted; the last sheet
+refusing to be deleted at all; a sheet arriving on disk that the index never
+heard of turning up anyway, and one whose folder went being dropped; and a
+workbook written before there were tabs reading as one sheet where it lies, then
+moving under `sheets/` — cells, column widths and all — the moment a second
+sheet is added. `tests/gui-tabs-smoke.sh` drives the tabs through the real
+application and reads the workbook folder off disk: a workbook opening on the
+sheet it was left on, Ctrl+Page Up/Down moving between sheets and each move
+being written down, an edit landing in the sheet that is showing and in no
+other, Ctrl+T adding a sheet with a folder and a primary file of its own, a
+sheet planted in the folder from outside turning up as a tab the keyboard can
+reach, and a workbook in the older format opening untouched and then being moved
+under `sheets/` when a second sheet is added. Deleting a sheet was driven the same way
+by hand: the confirmation, the folder going, the index catching up, and the last
+sheet refusing with a toast. `tests/gui-start-smoke.sh` then drives the start
+screen through the application and reads the resulting folder off disk rather
+than photographing it — though see the note at the head of that file: from its third
 step on it does not currently drive every machine, for reasons that predate
 per-cell saving and are the harness's rather than the application's.
 
@@ -448,7 +532,7 @@ The rest was driven by hand against a real GTK build: an edit landing on disk
 with no save; clearing a cell deleting its file; a cell file changed from
 outside reaching the grid, along with a cell file created from outside; an
 editor left open and saving twice, each save arriving while it still ran; a
-scratch sheet getting its own folder under the data directory and autosaving
+scratch workbook getting its own folder under the data directory and autosaving
 from the first keystroke; Copy To writing a new folder and carrying on there;
 and Ctrl+S saying what it now says. Cellar's own writes were checked not to come
 back as reloads — with the file watcher traced, seventeen of eighteen wake-ups
@@ -464,10 +548,10 @@ preference, and a command that does not exist, which reports itself in a toast
 and falls back to the built-in editor. `make check` covers the rest headlessly —
 command splitting, `%s` substitution, and the preferences surviving a restart.
 
-Choosing a folder is the exception. Both *Open Sheet…* and the location button
-in the New Sheet dialog hand off to the desktop portal, whose window cannot be
+Choosing a folder is the exception. Both *Open Workbook…* and the location
+button in the New Workbook dialog hand off to the desktop portal, whose window cannot be
 scripted from a test harness; each link there was checked separately (the async
 callback fires and returns a `GFile`, and `get-path` yields a string). That is
-why the New Sheet dialog fills its location in for you rather than making you
+why the New Workbook dialog fills its location in for you rather than making you
 pick one, and why a sheet named on the command line opens without a dialog at
 all: both paths stay testable.

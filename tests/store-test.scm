@@ -247,6 +247,214 @@
   (check "and is answered for a cell that has no file yet" #t
          (string? (cell-file-path path "Z99"))))
 
+
+;;;
+;;; Workbooks
+;;;
+
+(format #t "-- making a workbook~%")
+(let ((path (fresh "book.cellar")))
+  (check "create reports what it did" 'created
+         (create-workbook! path "Summary" #f))
+  (check "and it is a workbook" #t (workbook-directory? path))
+  (check "there is an index" #t (file-exists? (in path "workbook.scm")))
+  (check "and a place for the sheets" #t (file-exists? (in path "sheets")))
+  (check "holding the one it was given" '("Summary")
+         (workbook-sheet-names path))
+  (check "which is the one showing" "Summary" (workbook-active-sheet path))
+  (check "the sheet is a sheet" #t
+         (sheet-directory? (workbook-sheet-directory path "Summary")))
+  (check "creating over one is refused" 'cellar-store-error
+         (catch 'cellar-store-error
+           (lambda () (create-workbook! path "Summary" #f) 'no-error)
+           (lambda (key . args) key))))
+
+(format #t "-- adding sheets~%")
+(let ((path (fresh "adding.cellar")))
+  (create-workbook! path "Summary" #f)
+  (check "a sheet can be added" "Q1" (add-workbook-sheet! path "Q1"))
+  (add-workbook-sheet! path "Q2")
+  (check "and turns up in order" '("Summary" "Q1" "Q2")
+         (workbook-sheet-names path))
+  (check "the one just added is the one showing" "Q2"
+         (workbook-active-sheet path))
+  (check "a name already taken is refused" 'cellar-store-error
+         (catch 'cellar-store-error
+           (lambda () (add-workbook-sheet! path "Q1") 'no-error)
+           (lambda (key . args) key)))
+  (check "and so is one that differs only in case" 'cellar-store-error
+         (catch 'cellar-store-error
+           (lambda () (add-workbook-sheet! path "q1") 'no-error)
+           (lambda (key . args) key)))
+  (check "a name a folder cannot have is refused" 'cellar-store-error
+         (catch 'cellar-store-error
+           (lambda () (add-workbook-sheet! path "a/b") 'no-error)
+           (lambda (key . args) key))))
+
+(format #t "-- what a sheet may be called~%")
+(check "an ordinary name" #t (valid-sheet-name? "Q1 2024"))
+(check "not an empty one" #f (valid-sheet-name? "   "))
+(check "not a path" #f (valid-sheet-name? "a/b"))
+(check "not the folder itself" #f (valid-sheet-name? "."))
+(check "not the one above it" #f (valid-sheet-name? ".."))
+(check "not a hidden one" #f (valid-sheet-name? ".git"))
+
+(format #t "-- suggesting a name~%")
+(let ((path (fresh "naming.cellar")))
+  (create-workbook! path "Summary" #f)
+  (add-workbook-sheet! path "Q1")
+  (check "a free name is left alone" "Notes" (unique-sheet-name path "Notes"))
+  (check "a taken one gains a number" "Summary 2"
+         (unique-sheet-name path "Summary"))
+  (check "and one that ends in a number counts on from it" "Q2"
+         (unique-sheet-name path "Q1")))
+
+(format #t "-- renaming a sheet~%")
+(let ((path (fresh "renaming.cellar")))
+  (create-workbook! path "Summary" #f)
+  (add-workbook-sheet! path "Q1")
+  (let ((sheet (make-sheet 10 5)))
+    (set-cell-source! sheet (name->ref "A1") "\"kept\"")
+    (save-sheet! sheet (workbook-sheet-directory path "Q1") '()))
+  (check "renaming reports the new name" "First Quarter"
+         (rename-workbook-sheet! path "Q1" "First Quarter"))
+  (check "the order is kept" '("Summary" "First Quarter")
+         (workbook-sheet-names path))
+  (check "the cells came with it" "\"kept\""
+         (assoc-ref (read-sheet-cells
+                     (workbook-sheet-directory path "First Quarter"))
+                    "A1"))
+  (check "and the old folder is gone" #f
+         (file-exists? (in path "sheets" "Q1")))
+  (check "renaming onto a taken name is refused" 'cellar-store-error
+         (catch 'cellar-store-error
+           (lambda () (rename-workbook-sheet! path "First Quarter" "Summary")
+                   'no-error)
+           (lambda (key . args) key))))
+
+(format #t "-- removing a sheet~%")
+(let ((path (fresh "removing.cellar")))
+  (create-workbook! path "Summary" #f)
+  (add-workbook-sheet! path "Q1")
+  (add-workbook-sheet! path "Q2")
+  (let ((sheet (make-sheet 10 5)))
+    (set-cell-source! sheet (name->ref "A1") "1")
+    (save-sheet! sheet (workbook-sheet-directory path "Q1") '()))
+  (check "removing answers with what is left" '("Summary" "Q2")
+         (remove-workbook-sheet! path "Q1"))
+  (check "the folder went with it" #f (file-exists? (in path "sheets" "Q1")))
+  (check "and the index no longer names it" '("Summary" "Q2")
+         (workbook-sheet-names path))
+  (remove-workbook-sheet! path "Q2")
+  (check "the last sheet cannot be removed" 'cellar-store-error
+         (catch 'cellar-store-error
+           (lambda () (remove-workbook-sheet! path "Summary") 'no-error)
+           (lambda (key . args) key)))
+  (check "so the workbook still has one" '("Summary")
+         (workbook-sheet-names path)))
+
+(format #t "-- a note left in a sheet keeps its folder standing~%")
+(let ((path (fresh "keepsake.cellar")))
+  (create-workbook! path "Summary" #f)
+  (add-workbook-sheet! path "Q1")
+  (call-with-output-file (in path "sheets" "Q1" "README")
+    (lambda (port) (display "mine\n" port)))
+  (remove-workbook-sheet! path "Q1")
+  (check "the note is still there" #t
+         (file-exists? (in path "sheets" "Q1" "README")))
+  (check "but the sheet is not" #f
+         (file-exists? (in path "sheets" "Q1" "sheet.scm")))
+  (check "and so it is no longer a tab" '("Summary")
+         (workbook-sheet-names path)))
+
+(format #t "-- the order and the active sheet are remembered~%")
+(let ((path (fresh "order.cellar")))
+  (create-workbook! path "Summary" #f)
+  (add-workbook-sheet! path "Q1")
+  (add-workbook-sheet! path "Q2")
+  (set-workbook-order! path '("Q2" "Summary" "Q1"))
+  (check "the order is what was written" '("Q2" "Summary" "Q1")
+         (workbook-sheet-names path))
+  (set-workbook-active! path "Summary")
+  (check "and so is the active sheet" "Summary" (workbook-active-sheet path))
+  (check "reordering does not disturb it" "Summary"
+         (begin (set-workbook-order! path '("Summary" "Q1" "Q2"))
+                (workbook-active-sheet path))))
+
+(format #t "-- the index is a hint, and the disk is the truth~%")
+(let ((path (fresh "hint.cellar")))
+  (create-workbook! path "Summary" #f)
+  (add-workbook-sheet! path "Q1")
+  ;; As if someone else's commit had brought a sheet in and taken one away.
+  (create-sheet-directory! (in path "sheets" "Arrived") #f)
+  (remove-tree (in path "sheets" "Q1"))
+  (check "a sheet the index never heard of turns up" #t
+         (and (member "Arrived" (workbook-sheet-names path)) #t))
+  (check "one whose folder went is dropped" #f
+         (and (member "Q1" (workbook-sheet-names path)) #f))
+  (check "and the ones it knows keep their order" "Summary"
+         (car (workbook-sheet-names path))))
+
+(format #t "-- a workbook from before there were tabs~%")
+(let* ((path (fresh "old.cellar"))
+       ;; Its one sheet borrows the folder's name, and `fresh' numbers that.
+       (name (let ((base (basename path)))
+               (substring base 0 (- (string-length base)
+                                    (string-length ".cellar"))))))
+  (create-sheet-directory! path #f)
+  (let ((sheet (make-sheet 12 4)))
+    (set-cell-source! sheet (name->ref "A1") "\"first\"")
+    (set-cell-source! sheet (name->ref "B2") "(* 6 7)")
+    (save-sheet! sheet path (list (cons 0 120))))
+  (check "it is a workbook" #t (workbook-directory? path))
+  (check "of the older shape" #t (workbook-format-1? path))
+  (check "with one sheet, named for the folder" (list name)
+         (workbook-sheet-names path))
+  (check "which is the one showing" name (workbook-active-sheet path))
+  (check "and lives where it always did" path
+         (workbook-sheet-directory path name))
+  (check "nothing was written to say so" #f
+         (file-exists? (in path "workbook.scm")))
+
+  ;; A second sheet is what moves it, and not before.
+  (add-workbook-sheet! path "Q1")
+  (check "adding a sheet moves the old one under sheets/" #t
+         (file-exists? (in path "sheets" name "sheet.scm")))
+  (check "with its cells" "(* 6 7)"
+         (assoc-ref (read-sheet-cells (in path "sheets" name)) "B2"))
+  (check "and its column widths" '((0 . 120))
+         (let ((sheet (make-sheet 1 1)))
+           (load-sheet! sheet (in path "sheets" name))))
+  (check "the top of the workbook is clear" #f
+         (file-exists? (in path "sheet.scm")))
+  (check "there is an index now" #t (file-exists? (in path "workbook.scm")))
+  (check "naming both sheets" (list name "Q1") (workbook-sheet-names path))
+  (check "and it is no longer of the older shape" #f
+         (workbook-format-1? path)))
+
+(format #t "-- finding the workbook from inside it~%")
+(let ((path (fresh "finding.cellar")))
+  (create-workbook! path "Summary" #f)
+  (check "from the folder itself" path (workbook-directory path))
+  (check "from the index" path (workbook-directory (in path "workbook.scm")))
+  (check "from a sheet's primary file" path
+         (workbook-directory (in path "sheets" "Summary" "sheet.scm")))
+  (check "a bare directory is not a workbook" #f
+         (workbook-directory? (fresh "nothing"))))
+
+(format #t "-- what has to be watched~%")
+(let ((path (fresh "watching.cellar")))
+  (create-workbook! path "Summary" #f)
+  (add-workbook-sheet! path "Q1")
+  (let ((paths (workbook-watch-paths path)))
+    (check "the index" #t (and (member (in path "workbook.scm") paths) #t))
+    (check "the folder the sheets are in" #t
+           (and (member (in path "sheets") paths) #t))
+    (check "each sheet's cells" #t
+           (and (member (in path "sheets" "Q1" "cells") paths) #t))
+    (check "and each sheet's primary file" #t
+           (and (member (in path "sheets" "Summary" "sheet.scm") paths) #t))))
+
 (remove-tree root)
 
 (format #t "~%~a~%" (if (zero? failures) "ALL TESTS PASSED"

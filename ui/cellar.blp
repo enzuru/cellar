@@ -4,23 +4,40 @@ using Adw 1;
 menu primary_menu {
   section {
     item {
-      label: _("_New Sheet…");
+      label: _("_New Workbook…");
       action: "app.new";
     }
 
     item {
-      label: _("New _Scratch Sheet");
+      label: _("New _Scratch Workbook");
       action: "app.new-scratch";
     }
 
     item {
-      label: _("_Open Sheet…");
+      label: _("_Open Workbook…");
       action: "app.open";
     }
 
     item {
-      label: _("_Copy To…");
+      label: _("_Copy Workbook To…");
       action: "app.copy-to";
+    }
+  }
+
+  section {
+    item {
+      label: _("_Add Sheet…");
+      action: "app.add-sheet";
+    }
+
+    item {
+      label: _("Re_name Sheet…");
+      action: "app.rename-sheet";
+    }
+
+    item {
+      label: _("_Delete Sheet…");
+      action: "app.delete-sheet";
     }
   }
 
@@ -98,6 +115,27 @@ menu primary_menu {
   }
 }
 
+menu tab_menu {
+  section {
+    item {
+      label: _("Rename Sheet…");
+      action: "app.rename-sheet";
+    }
+
+    item {
+      label: _("Delete Sheet…");
+      action: "app.delete-sheet";
+    }
+  }
+
+  section {
+    item {
+      label: _("Add Sheet…");
+      action: "app.add-sheet";
+    }
+  }
+}
+
 menu line_menu {
   section {
     item {
@@ -122,9 +160,39 @@ menu line_menu {
   }
 }
 
+Adw.AlertDialog sheet_name_dialog {
+  heading: _("Add Sheet");
+  body: _("A sheet is a folder of its own inside the workbook, so its name is a folder\'s name.");
+  default-response: "name";
+  close-response: "cancel";
+
+  responses [
+    cancel: _("Cancel"),
+    name: _("Add") suggested,
+  ]
+
+  extra-child: Gtk.Entry sheet_name_entry {
+    placeholder-text: _("Name");
+    activates-default: true;
+    margin-top: 12;
+  };
+}
+
+Adw.AlertDialog delete_sheet_dialog {
+  heading: _("Delete Sheet?");
+  body: _("The sheet and its cells are deleted from the workbook folder.");
+  default-response: "cancel";
+  close-response: "cancel";
+
+  responses [
+    cancel: _("Cancel"),
+    delete: _("Delete") destructive,
+  ]
+}
+
 Adw.AlertDialog new_sheet_dialog {
-  heading: _("New Sheet");
-  body: _("A sheet is a folder: one small file for every cell, and a primary file for the sheet itself.");
+  heading: _("New Workbook");
+  body: _("A workbook is a folder, and a Git repository worth making one of: a folder for each sheet in it, and one small file for every cell.");
   default-response: "create";
   close-response: "cancel";
 
@@ -185,6 +253,25 @@ Adw.ApplicationWindow main_window {
       }
     }
 
+    // The tabs: one for each sheet in the workbook.
+    [top]
+    Adw.TabBar tab_bar {
+      view: tab_view;
+      autohide: false;
+      expand-tabs: false;
+
+      [end]
+      Gtk.Button {
+        icon-name: "list-add-symbolic";
+        tooltip-text: _("Add a sheet to this workbook (Ctrl+T)");
+        action-name: "app.add-sheet";
+
+        styles [
+          "flat",
+        ]
+      }
+    }
+
     // The cell bar: which cell is selected, and the Guile source behind it.
     [top]
     Gtk.Box cell_bar {
@@ -240,7 +327,7 @@ Adw.ApplicationWindow main_window {
           child: Adw.StatusPage {
             icon-name: "dev.enzuru.Cellar";
             title: _("Cellar");
-            description: _("A sheet is a folder of small files — one for each cell — so a spreadsheet can be kept under version control like anything else you write.");
+            description: _("A workbook is a folder of small files — one for each cell — so a set of spreadsheets can be kept under version control like anything else you write.");
 
             child: Gtk.Box {
               orientation: vertical;
@@ -248,7 +335,7 @@ Adw.ApplicationWindow main_window {
               halign: center;
 
               Gtk.Button {
-                label: _("Open Sheet…");
+                label: _("Open Workbook…");
                 action-name: "app.open";
 
                 styles [
@@ -258,7 +345,7 @@ Adw.ApplicationWindow main_window {
               }
 
               Gtk.Button {
-                label: _("New Sheet…");
+                label: _("New Workbook…");
                 action-name: "app.new";
 
                 styles [
@@ -267,7 +354,7 @@ Adw.ApplicationWindow main_window {
               }
 
               Gtk.Button {
-                label: _("New Scratch Sheet");
+                label: _("New Scratch Workbook");
                 action-name: "app.new-scratch";
 
                 styles [
@@ -281,21 +368,13 @@ Adw.ApplicationWindow main_window {
         Gtk.StackPage {
           name: "sheet";
 
-          child: Gtk.ScrolledWindow {
+          // Each page of this holds a scroller and a GtkColumnView built in
+          // code, because a workbook has as many of them as it has sheets and
+          // a .ui file can only describe one.
+          child: Adw.TabView tab_view {
             hexpand: true;
             vexpand: true;
-            hscrollbar-policy: automatic;
-            vscrollbar-policy: automatic;
-
-            Gtk.ColumnView sheet_view {
-              show-row-separators: true;
-              show-column-separators: true;
-              reorderable: false;
-
-              styles [
-                "data-table",
-              ]
-            }
+            menu-model: tab_menu;
           };
         }
       }

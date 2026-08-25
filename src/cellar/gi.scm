@@ -107,6 +107,9 @@
         "EntryRow"
         "ActionRow"
         "StyleManager"
+        "TabBar"
+        "TabPage"
+        "TabView"
         "Bin"))
 
   (for-each (lambda (name) (gi-import-by-name "GtkSource" name))
