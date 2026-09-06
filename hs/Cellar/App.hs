@@ -9,8 +9,6 @@ module Cellar.App (runApp) where
 import Control.Monad (forM_, unless, void, when)
 import Data.IORef
 import Data.Maybe (fromMaybe)
-import Data.Text (Text)
-import qualified Data.Text as T
 import System.Directory
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
@@ -87,7 +85,7 @@ activate application file = do
     <*> newIORef False          -- appAskingAboutKernel
     <*> newIORef Nothing        -- appStallDialog
 
-  installCss
+  installCss uiDirectory
   installIcons
   Gtk.windowSetIconName window (Just applicationId)
   warmUp app
@@ -190,48 +188,14 @@ installActions app application = do
     Gtk.windowClose (appWindow app)
 
 
-css :: Text
-css = T.unlines
-  [ "/* Monospace throughout the grid: digits that line up are the whole point"
-  , "   of a column of numbers, and a cell holds Scheme, which reads as code"
-  , "   everywhere else in the program too. */"
-  , ".cellar-cell, .cellar-gutter {"
-  , "  font-family: monospace;"
-  , "  padding: 2px 6px;"
-  , "  border-radius: 4px;"
-  , "}"
-  , ".cellar-gutter { opacity: 0.55; font-size: 0.85em; }"
-  , ".cellar-cell.cellar-active {"
-  , "  background-color: alpha(currentColor, 0.10);"
-  , "  box-shadow: inset 0 0 0 2px @accent_bg_color;"
-  , "  font-weight: bold;"
-  , "}"
-  , ".cellar-cell.cellar-error { color: @error_color; }"
-  , "/* A row or column being dragged, and the place it would land. */"
-  , ".cellar-cell.cellar-drag-source, .cellar-gutter.cellar-drag-source {"
-  , "  opacity: 0.35;"
-  , "}"
-  , ".cellar-cell.cellar-drag-target, .cellar-gutter.cellar-drag-target {"
-  , "  background-color: alpha(@accent_bg_color, 0.30);"
-  , "  box-shadow: inset 0 0 0 1px @accent_bg_color;"
-  , "}"
-  , "columnview.data-table > header > button.cellar-drag-source {"
-  , "  opacity: 0.5;"
-  , "}"
-  , "columnview.data-table > header > button.cellar-drag-target {"
-  , "  background-color: alpha(@accent_bg_color, 0.30);"
-  , "}"
-  , "columnview.data-table > header > button {"
-  , "  font-family: monospace;"
-  , "  font-weight: bold;"
-  , "}"
-  ]
+-- | The grid's own styling, which lives beside the .ui files because it is the
+-- same kind of thing: a description of how the window looks, kept out of the
+-- program that decides what it does.
 
-
-installCss :: IO ()
-installCss = do
+installCss :: FilePath -> IO ()
+installCss uiDirectory = do
   provider <- Gtk.cssProviderNew
-  Gtk.cssProviderLoadFromString provider css
+  Gtk.cssProviderLoadFromPath provider (uiDirectory </> "cellar.css")
   display <- Gdk.displayGetDefault
   forM_ display $ \d -> Gtk.styleContextAddProviderForDisplay d provider 600
 
@@ -245,7 +209,8 @@ installIcons = do
       theme <- Gtk.iconThemeGetForDisplay d
       Gtk.iconThemeAddSearchPath theme path
 
--- | Locate the .ui files, whether running from the source tree or installed.
+-- | Locate the .ui files and the stylesheet, whether running from the source
+-- tree or installed.
 
 findUiDirectory :: IO FilePath
 findUiDirectory = do

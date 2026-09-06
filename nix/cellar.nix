@@ -27,8 +27,9 @@ let
   shell = haskell.lib.compose.dontCheck
     (haskellPackages.callCabal2nix "cellar" ../. { });
 
-  # The .ui files, compiled from Blueprint.  A separate derivation so that the
-  # Haskell build does not have to know what Blueprint is.
+  # The .ui files, compiled from Blueprint, and the stylesheet that goes with
+  # them.  A separate derivation so that the Haskell build does not have to
+  # know what Blueprint is.
   ui = stdenv.mkDerivation {
     pname = "cellar-ui";
     version = "0.1.0";
@@ -45,7 +46,7 @@ let
     installPhase = ''
       runHook preInstall
       mkdir -p $out
-      cp *.ui $out/
+      cp *.ui *.css $out/
       runHook postInstall
     '';
   };
