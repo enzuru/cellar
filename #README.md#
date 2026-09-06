@@ -382,11 +382,7 @@ cellar.cabal         the shell's dependencies
   the shell — Haskell, everything that is not evaluation
 
 hs/Main.hs           the entry point
-hs/Cellar/App.hs     the application: what starts, and what the keys do
-hs/Cellar/App/Types.hs     the window's state, and what everything asks of it
-hs/Cellar/App/Kernel.hs    talking to the kernel, and the stall watchdog
-hs/Cellar/App/Workbook.hs  tabs, saving, and catching up with the folder
-hs/Cellar/App/Dialogs.hs   the dialogs, and the signals that raise them
+hs/Cellar/App.hs     application, tabs, actions, dialogs, the stall watchdog
 hs/Cellar/Grid.hs    the GtkColumnView spreadsheet, drawn from snapshots
 hs/Cellar/Editor.hs  the code editor and its live result preview
 hs/Cellar/Client.hs  starting the kernel and talking to it without blocking
@@ -420,13 +416,7 @@ tests/gui-smoke.sh   drives the real UI under Xvfb (`make smoke`)
 tests/gui-start-smoke.sh  the start screen, making a workbook, saving it
 tests/gui-tabs-smoke.sh   tabs, adding sheets, the format-1 migration
 tests/gui-kernel-smoke.sh a cell that will not finish, and surviving it
-tests/gui-drag-smoke.sh   dragging a row and a column, checked on disk
-tests/workbook.sh    fixtures: workbooks written out as the format documents them
 ```
-
-The five `Cellar.App.*` modules depend on each other in one direction only --
-Types, then Kernel, then Workbook, then Dialogs, then the application itself --
-so there is a place each thing goes and no cycles to break.
 
 `Cellar.Ref` and `src/cellar/ref.scm` are the same module written twice, and
 have to be: they are the vocabulary the two halves share. Nothing else is
@@ -543,16 +533,6 @@ Things worth knowing if you extend this:
 - Several GTK functions that look like they take `Text` take `FilePath`
   instead — `builderNewFromFile`, `fileNewForPath`, `iconThemeAddSearchPath` —
   because the C API takes a filename rather than a string.
-- **`gtk_widget_add_controller` takes ownership of the controller**, so
-  haskell-gi disowns the value you passed it. Any gesture whose own callbacks
-  reach back for it -- to call `gestureSetState`, say -- is then reading a
-  pointer you no longer hold, which haskell-gi reports at runtime as "accessing
-  a disowned pointer, this may lead to crashes". Take a reference of your own
-  with `objectRef` before handing it over.
-- `widgetTranslateCoordinates` is deprecated as of GTK 4.12 in favour of
-  `widgetComputePoint`, which takes and returns a `graphene_point_t`. The Guile
-  version had to use the deprecated call because G-Golf marshals neither; here
-  the modern one is available and is what the grid uses.
 - Handlers named in a `.blp`/`.ui` file are still not used here: the objects get
   an `id` and are connected to from Haskell, which keeps the wiring in one
   place and out of the markup.
@@ -622,15 +602,6 @@ impossible refused without the kernel falling over. The client's own side of
 that is in the Haskell suite, including the part that matters: a cell that will
 not finish, fifty pumps over it that all return, and a restart that abandons
 what was outstanding and comes back knowing nothing.
-
-`tests/gui-drag-smoke.sh` drags a row by its number and a column by its
-heading, and reads the folder afterwards rather than the screen: the dragged
-line has to land where it was dropped, the lines it passed have to slide over,
-and the reference in another cell has to have followed the cell it names. It
-opens no dialogs, deliberately -- `gui-smoke.sh` has drag steps too, but they
-come after the editor steps, and where the editor dialog does not take its
-keystrokes it stays open and swallows every click after it, so a pass there
-proves nothing about dragging.
 
 `tests/gui-kernel-smoke.sh` then plants `(let loop () (loop))` in a workbook and
 opens it. The window survives, still draws, still opens dialogs, and still

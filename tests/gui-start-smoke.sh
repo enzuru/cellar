@@ -44,6 +44,15 @@ mkdir -p "$HOME"
 
 export GDK_BACKEND=x11 GSK_RENDERER=cairo GUILE_AUTO_COMPILE=0
 
+# The shell is a compiled program now; the kernel it starts is still Guile, and
+# is found beside this checkout.
+CELLAR="$(pwd)/.build/cellar"
+if [ ! -x "$CELLAR" ]; then
+  echo "build the shell first: make build"
+  exit 1
+fi
+. tests/workbook.sh
+
 failures=0
 expect () {  # expect <description> <test...>
   local what="$1"; shift
@@ -51,7 +60,7 @@ expect () {  # expect <description> <test...>
 }
 contains () { grep -q "$2" "$1"; }
 
-dbus-run-session -- guile -L src -s bin/cellar.scm > "$OUT/app.log" 2>&1 &
+dbus-run-session -- "$CELLAR" > "$OUT/app.log" 2>&1 &
 APP=$!
 trap 'kill $APP 2>/dev/null' EXIT
 

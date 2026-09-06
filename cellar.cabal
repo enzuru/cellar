@@ -1,0 +1,100 @@
+cabal-version:      2.4
+name:               cellar
+version:            0.1.0
+synopsis:           A spreadsheet whose cells are Guile expressions
+description:
+  The shell half of Cellar: the window, the folder on disk, and the tabs.
+  The other half -- the kernel, which holds the sheets and evaluates the
+  cells -- is a Guile program this one starts and talks to over a pipe.
+
+license:            GPL-3.0-only
+build-type:         Simple
+
+common warnings
+    ghc-options: -Wall -Wcompat -Wincomplete-record-updates
+                 -Wincomplete-uni-patterns -Wredundant-constraints
+                 -- The GTK main loop and the kernel pipe are both blocking
+                 -- things pretending not to be; the threaded runtime is what
+                 -- lets a `select' on the pipe not stop the world.
+                 -threaded
+
+library
+    import:           warnings
+    hs-source-dirs:   hs
+    exposed-modules:  Cellar.Ref
+                      Cellar.Sexp
+                      Cellar.Protocol
+                      Cellar.Store
+                      Cellar.View
+                      Cellar.Config
+                      Cellar.Client
+    build-depends:    base              >= 4.17 && < 5
+                    , bytestring
+                    , containers
+                    , directory
+                    , filepath
+                    , process
+                    , text
+                    , unix
+    default-language: Haskell2010
+
+executable cellar
+    import:           warnings
+    hs-source-dirs:   hs
+    main-is:          Main.hs
+    other-modules:    Cellar.App
+                      Cellar.App.Types
+                      Cellar.App.Kernel
+                      Cellar.App.Workbook
+                      Cellar.App.Dialogs
+                      Cellar.Grid
+                      Cellar.Editor
+                      Cellar.Watch
+                      Cellar.Ref
+                      Cellar.Sexp
+                      Cellar.Protocol
+                      Cellar.Store
+                      Cellar.View
+                      Cellar.Config
+                      Cellar.Client
+    build-depends:    base              >= 4.17 && < 5
+                    , bytestring
+                    , containers
+                    , directory
+                    , filepath
+                    , process
+                    , text
+                    , unix
+                    , haskell-gi-base
+                    , gi-glib
+                    , gi-gobject
+                    , gi-gio
+                    , gi-gdk4
+                    , gi-graphene
+                    , gi-gtk4
+                    , gi-adwaita
+                    , gi-gtksource5
+                    , gi-pango
+    default-language: Haskell2010
+
+test-suite cellar-test
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   hs, test
+    main-is:          Spec.hs
+    other-modules:    Cellar.Ref
+                      Cellar.Sexp
+                      Cellar.Protocol
+                      Cellar.Store
+                      Cellar.View
+                      Cellar.Config
+                      Cellar.Client
+    build-depends:    base              >= 4.17 && < 5
+                    , bytestring
+                    , containers
+                    , directory
+                    , filepath
+                    , process
+                    , text
+                    , unix
+    default-language: Haskell2010

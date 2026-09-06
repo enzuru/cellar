@@ -1,19 +1,54 @@
-{ lib, stdenv, makeWrapper, guile, g-golf, blueprint-compiler
-, desktop-file-utils
+{ lib, stdenv, haskellPackages, haskell, makeWrapper, blueprint-compiler
+, desktop-file-utils, cellar-kernel
 , glib, gtk4, libadwaita, gtksourceview5, pango, gdk-pixbuf, graphene
 , harfbuzz, cairo
 , gobject-introspection, adwaita-icon-theme, hicolor-icon-theme
 , gsettings-desktop-schemas }:
 
+# The shell half of Cellar: the window, the folder on disk, the tabs.
+#
+# It is a Haskell program that starts `cellar-kernel`, a Guile program, and
+# talks to it over a pipe.  The two are packaged separately because they have
+# nothing in common but the wire format -- the kernel needs no GTK and the
+# shell needs no evaluator.
+
 let
   runtime = [ glib gtk4 libadwaita gtksourceview5 pango gdk-pixbuf graphene
-              harfbuzz cairo gobject-introspection g-golf ];
-  guileVersion = lib.versions.majorMinor guile.version;
+              harfbuzz cairo gobject-introspection ];
+
   # Typelibs live in each package's "out" output, but several of these packages
   # (glib, pango, gdk-pixbuf) default to "bin", where there is no
   # girepository-1.0 directory at all.
   typelibPath = lib.makeSearchPath "lib/girepository-1.0"
     (map (p: lib.getOutput "out" p) runtime);
+
+  # The test suite drives a real Guile kernel over a real pipe, which is the
+  # right thing for `make check` and the wrong thing for a sandboxed build.
+  shell = haskell.lib.compose.dontCheck
+    (haskellPackages.callCabal2nix "cellar" ../. { });
+
+  # The .ui files, compiled from Blueprint.  A separate derivation so that the
+  # Haskell build does not have to know what Blueprint is.
+  ui = stdenv.mkDerivation {
+    pname = "cellar-ui";
+    version = "0.1.0";
+    src = ../ui;
+    nativeBuildInputs = [ blueprint-compiler ];
+    GI_TYPELIB_PATH = typelibPath;
+    buildPhase = ''
+      runHook preBuild
+      for blueprint in *.blp; do
+        blueprint-compiler compile --output "''${blueprint%.blp}.ui" "$blueprint"
+      done
+      runHook postBuild
+    '';
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out
+      cp *.ui $out/
+      runHook postInstall
+    '';
+  };
 in
 stdenv.mkDerivation {
   pname = "cellar";
@@ -21,22 +56,14 @@ stdenv.mkDerivation {
 
   src = ../.;
 
-  nativeBuildInputs = [ makeWrapper blueprint-compiler desktop-file-utils ];
-  buildInputs = [ guile g-golf ] ++ runtime;
+  nativeBuildInputs = [ makeWrapper desktop-file-utils ];
 
-  # blueprint-compiler needs GtkSource on its typelib path to resolve `using GtkSource 5;`
-  GI_TYPELIB_PATH = typelibPath;
-
-  buildPhase = ''
-    runHook preBuild
-    make ui
-    runHook postBuild
-  '';
+  dontBuild = true;
 
   installPhase = ''
     runHook preInstall
     mkdir -p $out/share/cellar $out/bin
-    cp -r src ui bin $out/share/cellar/
+    cp -r ${ui} $out/share/cellar/ui
 
     install -Dm644 data/dev.enzuru.Cellar.desktop \
       $out/share/applications/dev.enzuru.Cellar.desktop
@@ -45,16 +72,12 @@ stdenv.mkDerivation {
     cp -r data/icons $out/share/icons
     desktop-file-validate $out/share/applications/dev.enzuru.Cellar.desktop
 
-    # Every --add-flags value must be a single whitespace-free token:
-    # makeWrapper splits them, which is why this uses a launcher script rather
-    # than -e "(@ (cellar main) main)".
-    makeWrapper ${guile}/bin/guile $out/bin/cellar \
-      --add-flags "-L" --add-flags "$out/share/cellar/src" \
-      --add-flags "-s" --add-flags "$out/share/cellar/bin/cellar.scm" \
-      --set GUILE_LOAD_PATH "$out/share/cellar/src:${g-golf}/share/guile/site/${guileVersion}" \
-      --set GUILE_LOAD_COMPILED_PATH "${g-golf}/lib/guile/${guileVersion}/site-ccache" \
-      --set GUILE_AUTO_COMPILE 0 \
+    makeWrapper ${shell}/bin/cellar $out/bin/cellar \
       --set CELLAR_UI_DIR "$out/share/cellar/ui" \
+      `# The kernel is a program of its own; the shell is told where it is` \
+      `# rather than going looking, since an installed Cellar has no source` \
+      `# tree to look in.` \
+      --set CELLAR_KERNEL "${cellar-kernel}/bin/cellar-kernel" \
       `# Set, not prefix: an inherited GI_TYPELIB_PATH from the host can point` \
       `# at a different glib, and mixing typelibs across glib versions trips` \
       `# g_binding_class_init's assertion at startup.` \
@@ -66,5 +89,5 @@ stdenv.mkDerivation {
     runHook postInstall
   '';
 
-  meta.description = "A spreadsheet whose formulas are Guile expressions";
+  meta.description = "A spreadsheet whose cells are Guile expressions";
 }

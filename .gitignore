@@ -4,6 +4,13 @@ ui/*.ui
 # Guile bytecode
 *.go
 
+# Haskell build output
+.build/
+dist-newstyle/
+*.hi
+*.o
+
 # nix
 result
 result-*
+/.agent-shell/

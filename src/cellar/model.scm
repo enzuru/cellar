@@ -8,10 +8,22 @@
 ;;; without a display.
 
 (define-module (cellar model)
+  #:use-module (cellar ref)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
   #:use-module (ice-9 match)
   #:use-module (ice-9 regex)
+  ;; Reference arithmetic lives in (cellar ref), which the shell shares.  It is
+  ;; re-exported here so that everything to do with a sheet still arrives from
+  ;; one module.
+  #:re-export (make-ref
+               ref-row
+               ref-column
+               ref->name
+               name->ref
+               column->name
+               ref-after-move
+               ref-after-insert)
   #:export (make-sheet
             sheet?
             sheet-rows
@@ -28,78 +40,13 @@
             invalidate-sheet!
             move-row!
             move-column!
-            ref-after-move
             insert-row!
             insert-column!
-            ref-after-insert
             grow-sheet!
             sheet-refs
             sheet->alist
             alist->sheet!
-            make-ref
-            ref-row
-            ref-column
-            ref->name
-            name->ref
-            column->name
             valid-ref?))
-
-
-;;;
-;;; Cell references
-;;;
-
-;; A reference is a (row . column) pair, both 0-based.  Users see them as "A1",
-;; where the column is a letter and the row is 1-based.
-
-(define (make-ref row column) (cons row column))
-(define (ref-row r) (car r))
-(define (ref-column r) (cdr r))
-
-(define (column->name column)
-  "Convert a 0-based COLUMN index to spreadsheet letters: 0 -> A, 26 -> AA."
-  (let loop ((n column) (acc '()))
-    (let ((letter (integer->char (+ (char->integer #\A) (remainder n 26))))
-          (rest (quotient n 26)))
-      (if (zero? rest)
-          (list->string (cons letter acc))
-          (loop (- rest 1) (cons letter acc))))))
-
-(define (name->column str)
-  "Inverse of column->name.  Returns #f if STR is not all A-Z."
-  (and (> (string-length str) 0)
-       (let loop ((i 0) (acc 0))
-         (if (= i (string-length str))
-             (- acc 1)
-             (let ((c (string-ref str i)))
-               (and (char>=? c #\A) (char<=? c #\Z)
-                    (loop (+ i 1)
-                          (+ (* acc 26)
-                             (+ 1 (- (char->integer c) (char->integer #\A)))))))))))
-
-(define (ref->name r)
-  (string-append (column->name (ref-column r))
-                 (number->string (+ 1 (ref-row r)))))
-
-(define (name->ref name)
-  "Parse \"A1\" into a reference, or return #f."
-  (let* ((str (if (symbol? name) (symbol->string name) name))
-         (len (string-length str))
-         (split (let loop ((i 0))
-                  (cond ((= i len) #f)
-                        ((char-numeric? (string-ref str i)) i)
-                        (else (loop (+ i 1)))))))
-    (and split
-         (> split 0)
-         (< split len)
-         (let ((column (name->column (substring str 0 split)))
-               (row (string->number (substring str split len))))
-           (and column
-                row
-                (exact? row)
-                (integer? row)
-                (>= row 1)
-                (make-ref (- row 1) column))))))
 
 
 ;;;
@@ -251,14 +198,6 @@ Used by the editor's live result preview."
 ;; was rearranged.  So a move relocates the sources *and* rewrites the
 ;; references inside them through the same permutation.
 
-(define (shift-index i from to)
-  "Where index I lands when the item at FROM is moved to TO and the indices in
-between slide over by one."
-  (cond ((= i from) to)
-        ((and (< from i) (<= i to)) (- i 1))
-        ((and (<= to i) (< i from)) (+ i 1))
-        (else i)))
-
 (define (move-row! sheet from to)
   "Move row FROM to index TO, both 0-based.  Returns #t when the sheet changed,
 or #f when the move is a no-op or out of range."
@@ -271,13 +210,6 @@ changed, or #f when the move is a no-op or out of range."
 
 (define (ref-index axis r)
   (if (eq? axis 'row) (ref-row r) (ref-column r)))
-
-(define (ref-after-move r axis from to)
-  "Where reference R lands when FROM is moved to TO along AXIS.  The grid uses
-this to keep the active cell on the same cell across a move."
-  (if (eq? axis 'row)
-      (make-ref (shift-index (ref-row r) from to) (ref-column r))
-      (make-ref (ref-row r) (shift-index (ref-column r) from to))))
 
 (define (move-line! sheet axis limit from to)
   "The common core of move-row! and move-column!."
@@ -385,17 +317,6 @@ moved in."
 ;; corner moves down and its near one does not -- while one written entirely
 ;; below the new line simply follows it down, and both are what a spreadsheet
 ;; is expected to do.
-
-(define (shift-index-for-insert i at)
-  "Where index I lands when a new line is opened at index AT."
-  (if (>= i at) (+ i 1) i))
-
-(define (ref-after-insert r axis at)
-  "Where reference R lands when a line is inserted at AT along AXIS.  The grid
-uses this to keep the active cell on the same cell across an insert."
-  (if (eq? axis 'row)
-      (make-ref (shift-index-for-insert (ref-row r) at) (ref-column r))
-      (make-ref (ref-row r) (shift-index-for-insert (ref-column r) at))))
 
 (define (insert-row! sheet at)
   "Open an empty row at index AT, 0-based, pushing the rows from AT downwards

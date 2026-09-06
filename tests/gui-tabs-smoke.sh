@@ -33,6 +33,15 @@ mkdir -p "$HOME"
 
 export GDK_BACKEND=x11 GSK_RENDERER=cairo GUILE_AUTO_COMPILE=0
 
+# The shell is a compiled program now; the kernel it starts is still Guile, and
+# is found beside this checkout.
+CELLAR="$(pwd)/.build/cellar"
+if [ ! -x "$CELLAR" ]; then
+  echo "build the shell first: make build"
+  exit 1
+fi
+. tests/workbook.sh
+
 failures=0
 expect () {  # expect <description> <test...>
   local what="$1"; shift
@@ -40,26 +49,32 @@ expect () {  # expect <description> <test...>
 }
 contains () { grep -q "$2" "$1"; }
 
+# Wait for something to become true, up to a limit. Cellar's work is
+# asynchronous now -- an edit goes to the kernel and the file is written when
+# the kernel answers -- so a fixed sleep is either too short on a slow machine
+# or wasted on a fast one. The assertions below are unchanged; only the waiting
+# adapts.
+settle () {  # settle <seconds> <test...>
+  local limit="$1"; shift
+  local waited=0
+  while [ "$waited" -lt "$limit" ]; do
+    if "$@"; then return 0; fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  "$@"
+}
+
 # A workbook of three sheets, made through the store rather than by hand, so
 # that what the app opens is what the app would have written.
 WORKBOOK="$OUT/demo.cellar"
-guile -L src -c '
-(use-modules (cellar model) (cellar store))
-(define workbook (list-ref (command-line) 1))
-(create-workbook! workbook "Summary" #f)
-(add-workbook-sheet! workbook "Q1")
-(add-workbook-sheet! workbook "Q2")
-(define (fill! name cells)
-  (let ((sheet (make-sheet 100 26)))
-    (for-each (lambda (cell)
-                (set-cell-source! sheet (name->ref (car cell)) (cdr cell)))
-              cells)
-    (save-sheet! sheet (workbook-sheet-directory workbook name) (quote ()))))
-(fill! "Summary" (quote (("A1" . "\"Summary sheet\""))))
-(fill! "Q1" (quote (("A1" . "\"Q1 sheet\"") ("B1" . "1200"))))
-(fill! "Q2" (quote (("A1" . "\"Q2 sheet\"") ("B1" . "2400"))))
-(set-workbook-active! workbook "Q1")
-' "$WORKBOOK" || { echo "could not build the workbook"; exit 1; }
+cellar_workbook "$WORKBOOK" Summary Q1 Q2
+cellar_cell "$WORKBOOK/sheets/Summary" A1 '"Summary sheet"'
+cellar_cell "$WORKBOOK/sheets/Q1" A1 '"Q1 sheet"'
+cellar_cell "$WORKBOOK/sheets/Q1" B1 '1200'
+cellar_cell "$WORKBOOK/sheets/Q2" A1 '"Q2 sheet"'
+cellar_cell "$WORKBOOK/sheets/Q2" B1 '2400'
+cellar_active "$WORKBOOK" Q1
 
 # A workbook in the format from before tabs: sheet.scm and cells/ at the top,
 # and no index above them.
@@ -69,7 +84,7 @@ cp -r example.cellar "$LEGACY"
 # dbus-run-session, because GApplication is single-instance: with a Cellar
 # already running on your session bus this one would hand its activation to
 # that window and exit, leaving nothing here to photograph.
-dbus-run-session -- guile -L src -s bin/cellar.scm "$WORKBOOK" > "$OUT/app.log" 2>&1 &
+dbus-run-session -- "$CELLAR" "$WORKBOOK" > "$OUT/app.log" 2>&1 &
 APP=$!
 trap 'kill $APP 2>/dev/null' EXIT
 
@@ -108,7 +123,8 @@ xdotool key Return; sleep 7
 xdotool key ctrl+a; sleep 1
 xdotool type --delay 30 '"edited on Summary"'
 sleep 2
-xdotool key ctrl+Return; sleep 4
+xdotool key ctrl+Return
+settle 30 contains "$WORKBOOK/sheets/Summary/cells/A1.scm" 'edited on Summary'
 shot 4-edited
 expect "the cell went into the sheet that was showing" \
   contains "$WORKBOOK/sheets/Summary/cells/A1.scm" 'edited on Summary'
@@ -120,7 +136,8 @@ expect "and not into any other sheet" \
 echo "4. adding a sheet"
 xdotool key ctrl+t; sleep 4
 shot 5-add-dialog
-xdotool key Return; sleep 4
+xdotool key Return
+settle 30 test -d "$WORKBOOK/sheets/Sheet 4"
 shot 6-added
 expect "the new sheet has a folder" test -d "$WORKBOOK/sheets/Sheet 4"
 expect "with a primary file in it" test -f "$WORKBOOK/sheets/Sheet 4/sheet.scm"
@@ -138,13 +155,13 @@ expect "and the index knows about it" \
 # notice a new folder. Ctrl+Page_Down does not wrap, so pressing it again on the
 # last tab costs nothing, and the loop below stops the moment the rebuild lands.
 echo "5. a sheet that arrived from outside"
-guile -L src -c '
-(use-modules (cellar store))
-(create-sheet-directory! (list-ref (command-line) 1) #f)
-' "$WORKBOOK/sheets/FromDisk" || echo "  could not plant the sheet"
+cellar_sheet "$WORKBOOK/sheets/FromDisk" 100 26
 sleep 5
 shot 7-arrived
-for _ in 1 2 3 4 5 6 7 8; do
+# Press and re-check: the tab cannot be reached until the rebuild has landed,
+# and Ctrl+Page_Down does not wrap, so pressing it again on the last tab costs
+# nothing.
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
   xdotool key ctrl+Next
   sleep 4
   if contains "$WORKBOOK/workbook.scm" '(active . "FromDisk")'; then break; fi
@@ -165,7 +182,7 @@ sleep 2
 # A workbook from before tabs opens where it lies, untouched, and is moved into
 # sheets/ only when a second sheet gives it a reason to be.
 echo "7. a workbook written before there were tabs"
-dbus-run-session -- guile -L src -s bin/cellar.scm "$LEGACY" > "$OUT/legacy.log" 2>&1 &
+dbus-run-session -- "$CELLAR" "$LEGACY" > "$OUT/legacy.log" 2>&1 &
 APP=$!
 sleep 12
 
@@ -176,7 +193,8 @@ expect "and was not rearranged on the way in" test ! -d "$LEGACY/sheets"
 
 echo "8. adding a sheet moves it into sheets/"
 xdotool key ctrl+t; sleep 4
-xdotool key Return; sleep 5
+xdotool key Return
+settle 30 test -f "$LEGACY/workbook.scm"
 shot 10-legacy-migrated
 expect "the old sheet moved under its own name" \
   test -f "$LEGACY/sheets/legacy/sheet.scm"

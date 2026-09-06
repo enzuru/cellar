@@ -22,6 +22,15 @@ mkdir -p "$OUT"
 
 export GDK_BACKEND=x11 GSK_RENDERER=cairo GUILE_AUTO_COMPILE=0
 
+# The shell is a compiled program now; the kernel it starts is still Guile, and
+# is found beside this checkout.
+CELLAR="$(pwd)/.build/cellar"
+if [ ! -x "$CELLAR" ]; then
+  echo "build the shell first: make build"
+  exit 1
+fi
+. tests/workbook.sh
+
 # Preferences of its own. Step 10 turns on the external editor, and it has no
 # business doing that to the Cellar you actually use.
 export CELLAR_CONFIG="$OUT/config.scm"
@@ -36,7 +45,7 @@ SHEET="$OUT/example.cellar"
 rm -rf "$SHEET"
 cp -r example.cellar "$SHEET"
 
-dbus-run-session -- guile -L src -s bin/cellar.scm "$SHEET" > "$OUT/app.log" 2>&1 &
+dbus-run-session -- "$CELLAR" "$SHEET" > "$OUT/app.log" 2>&1 &
 APP=$!
 trap 'kill $APP 2>/dev/null' EXIT
 
