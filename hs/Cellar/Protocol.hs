@@ -79,18 +79,18 @@ interpret :: B.ByteString -> Message
 interpret payload =
   case TE.decodeUtf8' payload of
     Left _ -> Garbled "a message that was not UTF-8"
-    Right text -> case parseSexp (T.unpack text) of
+    Right text -> case parseSexp text of
       Left why -> Garbled why
       Right value -> case toList value of
         Just [Sym "reply", Num n, body] -> Reply (fromIntegral n) body
         Just [Sym "fail", Num n, Str why] -> Failed (fromIntegral n) why
         _ -> Garbled ("a message that is neither a reply nor a failure: "
-                      ++ take 120 (writeSexp value))
+                      ++ T.unpack (T.take 120 (writeSexp value)))
 
 -- | Frame a datum for the wire.
 encode :: Sexp -> B.ByteString
 encode value =
-  let payload = TE.encodeUtf8 (T.pack (writeSexp value))
+  let payload = TE.encodeUtf8 (writeSexp value)
   in C.pack (show (B.length payload)) <> C.singleton '\n' <> payload
 
 -- | A request, framed and ready to write.

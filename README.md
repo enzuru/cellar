@@ -394,6 +394,7 @@ hs/Cellar/Store.hs   workbooks and sheets on disk — no GTK, no evaluator
 hs/Cellar/View.hs    a sheet as the window sees it: strings, colours, alignment
 hs/Cellar/Watch.hs   noticing that the folder changed under us
 hs/Cellar/Config.hs  preferences, and the command parsing behind them
+hs/Cellar/External.hs  handing a cell to an editor of your own
 hs/Cellar/Protocol.hs  the framing: a byte count, a newline, a datum
 hs/Cellar/Sexp.hs    an s-expression reader and writer, protocol-sized
 hs/Cellar/Ref.hs     cell references, and where they land when a row moves
@@ -421,6 +422,7 @@ tests/gui-start-smoke.sh  the start screen, making a workbook, saving it
 tests/gui-tabs-smoke.sh   tabs, adding sheets, the format-1 migration
 tests/gui-kernel-smoke.sh a cell that will not finish, and surviving it
 tests/gui-drag-smoke.sh   dragging a row and a column, checked on disk
+tests/gui-editor-smoke.sh an external editor, and the preference that turns it on
 tests/workbook.sh    fixtures: workbooks written out as the format documents them
 ```
 
@@ -543,12 +545,14 @@ Things worth knowing if you extend this:
 - Several GTK functions that look like they take `Text` take `FilePath`
   instead — `builderNewFromFile`, `fileNewForPath`, `iconThemeAddSearchPath` —
   because the C API takes a filename rather than a string.
-- **`gtk_widget_add_controller` takes ownership of the controller**, so
-  haskell-gi disowns the value you passed it. Any gesture whose own callbacks
-  reach back for it -- to call `gestureSetState`, say -- is then reading a
-  pointer you no longer hold, which haskell-gi reports at runtime as "accessing
-  a disowned pointer, this may lead to crashes". Take a reference of your own
-  with `objectRef` before handing it over.
+- **Watch for functions that take ownership.** `gtk_widget_add_controller` and
+  `gtk_no_selection_new` both do, so haskell-gi disowns the value you passed
+  them; anything that reaches back for it afterwards -- a gesture calling
+  `gestureSetState` from its own callback, or the grid appending a row to the
+  list model it handed the selection -- is reading a pointer you no longer
+  hold. haskell-gi reports it at runtime as "accessing a disowned pointer, this
+  may lead to crashes", and it works right up until the widget lets go. Take a
+  reference of your own with `objectRef` first.
 - `widgetTranslateCoordinates` is deprecated as of GTK 4.12 in favour of
   `widgetComputePoint`, which takes and returns a `graphene_point_t`. The Guile
   version had to use the deprecated call because G-Golf marshals neither; here

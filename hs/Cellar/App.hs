@@ -68,24 +68,24 @@ activate application file = do
   config <- loadConfig >>= newIORef
   home <- fromMaybe "." <$> lookupEnv "HOME"
 
+  -- Named at construction rather than positional: a record this wide, built
+  -- out of a row of `newIORef Nothing`, is one inserted field away from being
+  -- silently wrong.
   app <- App window builder uiDirectory toasts tabView tabBar stack cellBar
              recalculate windowTitle referenceLabel sourceLabel lineMenu kernel
              config
-    <$> newIORef Nothing
-    <*> newIORef False
-    <*> newIORef Nothing
-    <*> newIORef []
-    <*> newIORef []
-    <*> newIORef 0
-    <*> newIORef False
-    <*> newIORef home
-    <*> newIORef False
-    <*> newIORef Nothing
-    <*> newIORef Nothing
-    <*> newIORef False
-    <*> newIORef False
-    <*> newIORef False
-    <*> newIORef Nothing
+    <$> newIORef Nothing        -- appWorkbook
+    <*> newIORef False          -- appScratch
+    <*> newIORef Nothing        -- appWatcher
+    <*> newIORef []             -- appWatching
+    <*> newIORef []             -- appTabs
+    <*> newIORef 0              -- appNextId
+    <*> newIORef False          -- appLoading
+    <*> newIORef home           -- appLocation
+    <*> newIORef False          -- appKernelAnswered
+    <*> newIORef False          -- appWaitingOnPurpose
+    <*> newIORef False          -- appAskingAboutKernel
+    <*> newIORef Nothing        -- appStallDialog
 
   installCss
   installIcons
@@ -137,7 +137,7 @@ installActions app application = do
     workbook <- readIORef (appWorkbook app)
     scratch <- readIORef (appScratch app)
     let suggestion = case (workbook, scratch) of
-          (Just path, False) -> workbookName path
+          (Just open, False) -> workbookName open
           _ -> "workbook"
     askForNewWorkbook app suggestion True
   define "add-sheet" ["<Control>t"] (onSheet (const (askForSheetName app Nothing)))

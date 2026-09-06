@@ -24,7 +24,11 @@ import Control.Exception (SomeException, try)
 import Data.Char (isSpace)
 import Data.Maybe (fromMaybe)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import System.Environment (lookupEnv)
+import System.IO (IOMode (..), hSetEncoding, utf8, withFile)
 import System.FilePath ((</>), takeDirectory)
 
 import Cellar.Sexp
@@ -58,7 +62,7 @@ loadConfig = do
   path <- configFilePath
   exists <- doesFileExist path
   if not exists then pure defaultConfig else do
-    contents <- try (readFile path) :: IO (Either SomeException String)
+    contents <- try (readUtf8 path) :: IO (Either SomeException Text)
     pure $ case contents of
       Left _ -> defaultConfig
       Right text -> case parseSexp text of
@@ -76,9 +80,11 @@ saveConfig :: Config -> IO ()
 saveConfig config = do
   path <- configFilePath
   createDirectoryIfMissing True (takeDirectory path)
-  writeFile path text
+  withFile path WriteMode $ \handle -> do
+    hSetEncoding handle utf8
+    TIO.hPutStr handle text
   where
-    text = ";; Cellar preferences.\n" ++ writeSexp value ++ "\n"
+    text = T.pack ";; Cellar preferences.\n" <> writeSexp value <> T.pack "\n"
     value = list
       [ Pair (Sym "external-editor-enabled") (Bool (externalEditorEnabled config))
       , Pair (Sym "external-editor-command") (Str (externalEditorCommand config))
@@ -165,3 +171,10 @@ substitute path = go [] False
       ('%' : 's' : rest) -> go (reverse path ++ acc) True rest
       ('%' : '%' : rest) -> go ('%' : acc) used rest
       (c : rest) -> go (c : acc) used rest
+
+-- | A file's contents as text, decoded as UTF-8 whatever the locale says.
+readUtf8 :: FilePath -> IO Text
+readUtf8 path = withFile path ReadMode $ \handle -> do
+  hSetEncoding handle utf8
+  contents <- TIO.hGetContents handle
+  T.length contents `seq` pure contents

@@ -172,8 +172,7 @@ firstScheme manager (name : more) = do
     Nothing -> firstScheme manager more
 
 getObject
-  :: (GObject o, TypedObject o)
-  => Gtk.Builder -> Text -> (ManagedPtr o -> o) -> IO o
+  :: GObject o => Gtk.Builder -> Text -> (ManagedPtr o -> o) -> IO o
 getObject builder name constructor = do
   found <- Gtk.builderGetObject builder name
   case found of

@@ -98,8 +98,10 @@ data App = App
   , appLineMenu :: Maybe Gio.MenuModel
   , appKernel :: Kernel
   , appConfig :: IORef Config
-    -- | The workbook being edited, or nothing when none is open.
-  , appWorkbook :: IORef (Maybe FilePath)
+    -- | The workbook being edited, or nothing when none is open.  Resolved
+    -- when it was opened, so nothing after that has to look at the folder to
+    -- work out what shape it is in.
+  , appWorkbook :: IORef (Maybe Workbook)
   , appScratch :: IORef Bool
   , appWatcher :: IORef (Maybe Watcher)
   , appWatching :: IORef [FilePath]
@@ -110,9 +112,6 @@ data App = App
     -- written to disk during that.
   , appLoading :: IORef Bool
   , appLocation :: IORef FilePath
-  , appCopying :: IORef Bool
-  , appRenaming :: IORef (Maybe Tab)
-  , appPendingDelete :: IORef (Maybe (Tab, Adw.TabPage))
     -- | Set once the kernel has answered anything at all.  Until then it is
     -- still starting, and the first real request would otherwise be timed as
     -- though a cell had gone wrong.
@@ -167,9 +166,9 @@ tabDirectory app tab = do
   workbook <- readIORef (appWorkbook app)
   case workbook of
     Nothing -> pure Nothing
-    Just path -> do
+    Just open -> do
       name <- readIORef (tabName tab)
-      Just <$> workbookSheetDirectory path name
+      pure (Just (workbookSheetDirectory open name))
 
 
 selectTab :: App -> String -> IO ()
@@ -292,7 +291,7 @@ oneLine = unwords . words
 -- Opening and making workbooks
 
 
-object :: (GObject o, TypedObject o) => Gtk.Builder -> Text -> (ManagedPtr o -> o) -> IO o
+object :: GObject o => Gtk.Builder -> Text -> (ManagedPtr o -> o) -> IO o
 object builder name constructor = do
   found <- Gtk.builderGetObject builder name
   case found of
@@ -301,8 +300,7 @@ object builder name constructor = do
 
 
 optionalObject
-  :: (GObject o, TypedObject o)
-  => Gtk.Builder -> Text -> (ManagedPtr o -> o) -> IO (Maybe o)
+  :: GObject o => Gtk.Builder -> Text -> (ManagedPtr o -> o) -> IO (Maybe o)
 optionalObject builder name constructor = do
   found <- Gtk.builderGetObject builder name
   case found of

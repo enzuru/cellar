@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- | S-expressions, as much of them as the wire needs.
 --
 -- Cellar's two halves talk in s-expressions, because the thing being talked
@@ -16,6 +18,13 @@
 -- Doing it the other way -- a list constructor plus a special case for dotted
 -- pairs -- makes the alists the kernel replies with into an awkward shape, and
 -- alists are most of what comes back.
+--
+-- Reading and writing are in 'Text'; the strings and symbols inside a datum
+-- are 'String'.  That is deliberate rather than half-done.  A message arrives
+-- as bytes and leaves as bytes, and turning the whole of one into a linked
+-- list of 'Char' merely to look at its parentheses is waste.  What comes /out/
+-- of a datum is a cell's source or a sheet's name, and every caller of those
+-- wants a 'String' and would only unpack it again.
 module Cellar.Sexp
   ( Sexp (..)
   , list
@@ -31,6 +40,10 @@ module Cellar.Sexp
   ) where
 
 import Data.Char (chr, isDigit, isSpace, ord)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Lazy as TL
+import Data.Text.Lazy.Builder (Builder, fromString, fromText, singleton, toLazyText)
 import Numeric (showHex)
 
 data Sexp
@@ -88,104 +101,125 @@ asBool _ = True
 
 -- | Read one datum.  Returns what went wrong rather than throwing, because the
 -- caller is a window and a malformed message is not a reason to take it down.
-parseSexp :: String -> Either String Sexp
+parseSexp :: Text -> Either String Sexp
 parseSexp input = do
   (value, rest) <- datum (skip input)
-  case skip rest of
-    "" -> Right value
-    leftover -> Left ("trailing text after the datum: " ++ take 20 leftover)
+  let leftover = skip rest
+  if T.null leftover
+    then Right value
+    else Left ("trailing text after the datum: " ++ T.unpack (T.take 20 leftover))
 
 -- | Whitespace and line comments.
-skip :: String -> String
-skip (c : cs) | isSpace c = skip cs
-skip (';' : cs) = skip (drop 1 (dropWhile (/= '\n') cs))
-skip s = s
+skip :: Text -> Text
+skip text = case T.uncons text of
+  Just (c, rest)
+    | isSpace c -> skip rest
+    | c == ';' -> skip (T.drop 1 (T.dropWhile (/= '\n') rest))
+  _ -> text
 
-datum :: String -> Either String (Sexp, String)
-datum [] = Left "a message that stopped in the middle"
-datum ('(' : cs) = sequenceOf (skip cs)
-datum (')' : _) = Left "a close paren with nothing open"
-datum ('"' : cs) = stringLiteral cs ""
-datum ('#' : 't' : cs) = Right (Bool True, cs)
-datum ('#' : 'f' : cs) = Right (Bool False, cs)
-datum ('#' : cs) = Left ("an unsupported # syntax: #" ++ take 8 cs)
-datum s =
-  let (token, rest) = span (not . delimiter) s
-  in if null token
-       then Left ("an unreadable character: " ++ take 8 s)
-       else Right (atom token, rest)
+datum :: Text -> Either String (Sexp, Text)
+datum text = case T.uncons text of
+  Nothing -> Left "a message that stopped in the middle"
+  Just ('(', rest) -> sequenceOf (skip rest)
+  Just (')', _) -> Left "a close paren with nothing open"
+  Just ('"', rest) -> stringLiteral rest []
+  Just ('#', rest) -> case T.uncons rest of
+    Just ('t', more) -> Right (Bool True, more)
+    Just ('f', more) -> Right (Bool False, more)
+    _ -> Left ("an unsupported # syntax: #" ++ T.unpack (T.take 8 rest))
+  _ ->
+    -- One slice for the whole token, rather than a character at a time.
+    let (token, rest) = T.break delimiter text
+    in if T.null token
+         then Left ("an unreadable character: " ++ T.unpack (T.take 8 text))
+         else Right (atom token, rest)
 
 -- | Where a bare token stops.
 delimiter :: Char -> Bool
-delimiter c = isSpace c || c `elem` "()\";"
+delimiter c = isSpace c || c `elem` ("()\";" :: String)
 
-atom :: String -> Sexp
+atom :: Text -> Sexp
 atom token
   | Just n <- readInteger token = Num n
   | Just d <- readDouble token = Real d
-  | otherwise = Sym token
+  | otherwise = Sym (T.unpack token)
 
-readInteger :: String -> Maybe Integer
-readInteger ('-' : rest@(_ : _)) | all isDigit rest = Just (negate (digits rest))
-readInteger s@(_ : _) | all isDigit s = Just (digits s)
-readInteger _ = Nothing
+readInteger :: Text -> Maybe Integer
+readInteger token = case T.uncons token of
+  Just ('-', rest)
+    | not (T.null rest), T.all isDigit rest -> Just (negate (digits rest))
+  Just _ | T.all isDigit token -> Just (digits token)
+  _ -> Nothing
 
-digits :: String -> Integer
-digits = foldl' (\acc c -> acc * 10 + fromIntegral (ord c - ord '0')) 0
+digits :: Text -> Integer
+digits = T.foldl' (\acc c -> acc * 10 + fromIntegral (ord c - ord '0')) 0
 
-readDouble :: String -> Maybe Double
-readDouble s = case reads s :: [(Double, String)] of
+readDouble :: Text -> Maybe Double
+readDouble token = case reads (T.unpack token) :: [(Double, String)] of
   [(d, "")] -> Just d
   _ -> Nothing
 
 -- | The rest of a list, having read the open paren.  A @.@ before the last
 -- element makes it a dotted pair, which is how every alist the kernel sends is
 -- shaped.
-sequenceOf :: String -> Either String (Sexp, String)
-sequenceOf (')' : cs) = Right (Nil, cs)
-sequenceOf ('.' : c : cs)
-  | isSpace c = do
-      (tailValue, rest) <- datum (skip cs)
-      case skip rest of
-        (')' : more) -> Right (tailValue, more)
-        _ -> Left "a dotted pair with more than one thing after the dot"
-sequenceOf s = do
-  (this, rest) <- datum s
-  (more, final) <- sequenceOf (skip rest)
-  Right (Pair this more, final)
+sequenceOf :: Text -> Either String (Sexp, Text)
+sequenceOf text = case T.uncons text of
+  Just (')', rest) -> Right (Nil, rest)
+  Just ('.', rest) | maybe False (isSpace . fst) (T.uncons rest) -> do
+    (tailValue, more) <- datum (skip rest)
+    case T.uncons (skip more) of
+      Just (')', final) -> Right (tailValue, final)
+      _ -> Left "a dotted pair with more than one thing after the dot"
+  _ -> do
+    (this, rest) <- datum text
+    (more, final) <- sequenceOf (skip rest)
+    Right (Pair this more, final)
 
 -- | A string literal, having read the open quote.  The escapes are the ones
 -- Guile's writer emits.
-stringLiteral :: String -> String -> Either String (Sexp, String)
-stringLiteral [] _ = Left "a string that never ends"
-stringLiteral ('"' : cs) acc = Right (Str (reverse acc), cs)
-stringLiteral ('\\' : c : cs) acc = case c of
-  'n' -> stringLiteral cs ('\n' : acc)
-  't' -> stringLiteral cs ('\t' : acc)
-  'r' -> stringLiteral cs ('\r' : acc)
-  'a' -> stringLiteral cs ('\a' : acc)
-  'b' -> stringLiteral cs ('\b' : acc)
-  'f' -> stringLiteral cs ('\f' : acc)
-  'v' -> stringLiteral cs ('\v' : acc)
-  '0' -> stringLiteral cs ('\0' : acc)
-  '\\' -> stringLiteral cs ('\\' : acc)
-  '"' -> stringLiteral cs ('"' : acc)
-  -- Guile writes an awkward character as \xHH; -- hex digits, then a semicolon.
-  'x' -> case break (== ';') cs of
-    (hex, ';' : more)
-      | not (null hex), all isHexDigit hex ->
-          stringLiteral more (chr (hexValue hex) : acc)
-    _ -> Left "a \\x escape with no semicolon after it"
-  -- A backslash before a newline is Guile's line continuation: both go.
-  '\n' -> stringLiteral (dropWhile (\ch -> ch == ' ' || ch == '\t') cs) acc
-  other -> stringLiteral cs (other : acc)
-stringLiteral (c : cs) acc = stringLiteral cs (c : acc)
+--
+-- The body is taken in runs rather than a character at a time: most strings
+-- have no escapes in them at all, and one of those costs a single slice.
+stringLiteral :: Text -> [Text] -> Either String (Sexp, Text)
+stringLiteral text chunks =
+  let (plain, rest) = T.break (\c -> c == '"' || c == '\\') text
+      kept = plain : chunks
+  in case T.uncons rest of
+       Just ('"', more) -> Right (Str (T.unpack (T.concat (reverse kept))), more)
+       Just ('\\', more) -> escaped more kept
+       _ -> Left "a string that never ends"
+
+escaped :: Text -> [Text] -> Either String (Sexp, Text)
+escaped text chunks = case T.uncons text of
+  Nothing -> Left "a string that ends in a backslash"
+  Just (c, rest) -> case c of
+    'n' -> stringLiteral rest ("\n" : chunks)
+    't' -> stringLiteral rest ("\t" : chunks)
+    'r' -> stringLiteral rest ("\r" : chunks)
+    'a' -> stringLiteral rest ("\a" : chunks)
+    'b' -> stringLiteral rest ("\b" : chunks)
+    'f' -> stringLiteral rest ("\f" : chunks)
+    'v' -> stringLiteral rest ("\v" : chunks)
+    '0' -> stringLiteral rest ("\0" : chunks)
+    '\\' -> stringLiteral rest ("\\" : chunks)
+    '"' -> stringLiteral rest ("\"" : chunks)
+    -- Guile writes an awkward character as \xHH; -- hex digits, then a
+    -- semicolon.
+    'x' ->
+      let (hex, after) = T.break (== ';') rest
+      in case T.uncons after of
+           Just (';', more) | not (T.null hex), T.all isHexDigit hex ->
+             stringLiteral more (T.singleton (chr (hexValue hex)) : chunks)
+           _ -> Left "a \\x escape with no semicolon after it"
+    -- A backslash before a newline is Guile's line continuation: both go.
+    '\n' -> stringLiteral (T.dropWhile (\ch -> ch == ' ' || ch == '\t') rest) chunks
+    other -> stringLiteral rest (T.singleton other : chunks)
 
 isHexDigit :: Char -> Bool
 isHexDigit c = isDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 
-hexValue :: String -> Int
-hexValue = foldl' (\acc c -> acc * 16 + digitValue c) 0
+hexValue :: Text -> Int
+hexValue = T.foldl' (\acc c -> acc * 16 + digitValue c) 0
   where
     digitValue c
       | isDigit c = ord c - ord '0'
@@ -195,29 +229,33 @@ hexValue = foldl' (\acc c -> acc * 16 + digitValue c) 0
 -- Writing
 
 -- | Render a datum the way Guile's @read@ will take it back.
-writeSexp :: Sexp -> String
-writeSexp value = go value ""
+writeSexp :: Sexp -> Text
+writeSexp = TL.toStrict . toLazyText . build
+
+build :: Sexp -> Builder
+build value = case value of
+  Sym s -> fromString s
+  Str s -> singleton '"' <> fromText (escape (T.pack s)) <> singleton '"'
+  Num n -> fromString (show n)
+  Real d -> fromString (show d)
+  Bool True -> "#t"
+  Bool False -> "#f"
+  Nil -> "()"
+  Pair a b -> singleton '(' <> build a <> rest b <> singleton ')'
   where
-    go (Sym s) = (s ++)
-    go (Str s) = ('"' :) . escape s . ('"' :)
-    go (Num n) = (show n ++)
-    go (Real d) = (show d ++)
-    go (Bool True) = ("#t" ++)
-    go (Bool False) = ("#f" ++)
-    go Nil = ("()" ++)
-    go (Pair a b) = ('(' :) . go a . rest b . (')' :)
-
     -- A proper list prints as (a b c); an improper one as (a . b).
-    rest Nil = id
-    rest (Pair a b) = (' ' :) . go a . rest b
-    rest other = (" . " ++) . go other
+    rest Nil = mempty
+    rest (Pair a b) = singleton ' ' <> build a <> rest b
+    rest other = " . " <> build other
 
-    escape s k = foldr step k s
-    step c k = case c of
-      '"' -> '\\' : '"' : k
-      '\\' -> '\\' : '\\' : k
-      '\n' -> '\\' : 'n' : k
-      '\t' -> '\\' : 't' : k
-      '\r' -> '\\' : 'r' : k
-      _ | ord c < 0x20 -> '\\' : 'x' : showHex (ord c) (';' : k)
-        | otherwise -> c : k
+escape :: Text -> Text
+escape = T.concatMap step
+  where
+    step c = case c of
+      '"' -> "\\\""
+      '\\' -> "\\\\"
+      '\n' -> "\\n"
+      '\t' -> "\\t"
+      '\r' -> "\\r"
+      _ | ord c < 0x20 -> T.pack ('\\' : 'x' : showHex (ord c) ";")
+        | otherwise -> T.singleton c

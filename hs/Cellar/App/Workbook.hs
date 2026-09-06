@@ -9,7 +9,7 @@
 --
 module Cellar.App.Workbook where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, throwIO, try)
 import Control.Monad (forM_, unless, void, when)
 import Data.IORef
 import Data.Maybe (fromMaybe)
@@ -113,10 +113,10 @@ buildTabs app showing = do
   writeIORef (appLoading app) True
   closeAllTabs app
   workbook <- readIORef (appWorkbook app)
-  forM_ workbook $ \path -> do
-    names <- workbookSheetNames path
+  forM_ workbook $ \open -> do
+    names <- workbookSheetNames open
     forM_ names (addTab app)
-    active <- workbookActiveSheet path
+    active <- workbookActiveSheet open
     let wanted = case showing of
           Just name | name `elem` names -> Just name
           _ -> case active of
@@ -185,8 +185,8 @@ rewatch app = do
     Nothing -> do
       writeIORef (appWatching app) []
       writeIORef (appWatcher app) Nothing
-    Just path -> do
-      paths <- workbookWatchPaths path
+    Just open -> do
+      paths <- workbookWatchPaths open
       writeIORef (appWatching app) paths
       watcher <- watchPaths paths (reloadFromDisk app)
       writeIORef (appWatcher app) (Just watcher)
@@ -201,8 +201,8 @@ rewatch app = do
 rewatchIfChanged :: App -> IO ()
 rewatchIfChanged app = do
   workbook <- readIORef (appWorkbook app)
-  forM_ workbook $ \path -> do
-    wanted <- workbookWatchPaths path
+  forM_ workbook $ \open -> do
+    wanted <- workbookWatchPaths open
     current <- readIORef (appWatching app)
     when (wanted /= current) (rewatch app)
 
@@ -215,11 +215,11 @@ rewatchIfChanged app = do
 reloadFromDisk :: App -> IO ()
 reloadFromDisk app = do
   workbook <- readIORef (appWorkbook app)
-  forM_ workbook $ \path -> do
-    stillThere <- isWorkbookDirectory path
+  forM_ workbook $ \open -> do
+    stillThere <- isWorkbookDirectory (workbookRoot open)
     when stillThere $ do
       rewatchIfChanged app
-      names <- workbookSheetNames path
+      names <- workbookSheetNames open
       tabs <- readIORef (appTabs app)
       current <- mapM (readIORef . tabName) tabs
       if sameSet names current
@@ -265,22 +265,21 @@ reloadTab app tab = do
 
 openWorkbook :: App -> FilePath -> IO Bool
 openWorkbook app path = do
-  directory <- workbookDirectory path
-  isWorkbook <- isWorkbookDirectory directory
-  if not isWorkbook
-    then do
-      notify app (T.pack (takeFileName directory ++ " is not a Cellar workbook"))
+  resolved <- resolveWorkbook path
+  case resolved of
+    Nothing -> do
+      notify app (T.pack (takeFileName path ++ " is not a Cellar workbook"))
       pure False
-    else do
+    Just open -> do
       outcome <- try $ do
-        writeIORef (appWorkbook app) (Just directory)
+        writeIORef (appWorkbook app) (Just open)
         writeIORef (appScratch app) False
         buildTabs app Nothing
         rewatch app
         showSheetPage app
       case outcome :: Either SomeException () of
         Left _ -> do
-          notify app (T.pack ("Could not open " ++ takeFileName directory))
+          notify app (T.pack ("Could not open " ++ workbookName open))
           pure False
         Right () -> pure True
 
@@ -312,9 +311,9 @@ persistOrder :: App -> IO ()
 persistOrder app = do
   loading <- readIORef (appLoading app)
   workbook <- readIORef (appWorkbook app)
-  unless loading $ forM_ workbook $ \path -> do
+  unless loading $ forM_ workbook $ \open -> do
     names <- tabOrder app
-    reportFailure app "save the order of the sheets" (setWorkbookOrder path names)
+    reportFailure app "save the order of the sheets" (setWorkbookOrder open names)
 
 
 onTabSelected :: App -> IO ()
@@ -324,9 +323,9 @@ onTabSelected app = do
     gridActiveRef (tabGrid t) >>= showSelection app
     loading <- readIORef (appLoading app)
     workbook <- readIORef (appWorkbook app)
-    unless loading $ forM_ workbook $ \path -> do
+    unless loading $ forM_ workbook $ \open -> do
       name <- readIORef (tabName t)
-      reportFailure app "save the workbook" (setWorkbookActive path name)
+      reportFailure app "save the workbook" (setWorkbookActive open name)
 
 -- | A tab's close button, or Delete Sheet.  A tab is a sheet of the workbook
 -- rather than a view of one, so closing it is deleting it -- which is worth
@@ -339,9 +338,9 @@ deleteSheet app tab = do
   workbook <- readIORef (appWorkbook app)
   case workbook of
     Nothing -> pure False
-    Just path -> do
+    Just open -> do
       name <- readIORef (tabName tab)
-      outcome <- try (removeWorkbookSheet path name)
+      outcome <- try (removeWorkbookSheet open name)
       case outcome :: Either StoreError [String] of
         Left (StoreError why) -> notify app (T.pack why) >> pure False
         Right _ -> do
@@ -354,12 +353,16 @@ deleteSheet app tab = do
 addSheet :: App -> String -> IO ()
 addSheet app name = do
   workbook <- readIORef (appWorkbook app)
-  forM_ workbook $ \path -> do
-    legacy <- isFormatOne path
-    outcome <- try (addWorkbookSheet path name)
-    case outcome :: Either StoreError String of
+  forM_ workbook $ \open -> do
+    let legacy = isFormatOne open
+    outcome <- try (addWorkbookSheet open name)
+    case outcome :: Either StoreError (Workbook, String) of
       Left (StoreError why) -> notify app (T.pack why)
-      Right added -> do
+      Right (moved, added) -> do
+        -- Adding to a workbook written before there were tabs moves its one
+        -- sheet under sheets/, so what we are holding describes a folder that
+        -- no longer looks like that.
+        writeIORef (appWorkbook app) (Just moved)
         -- A workbook written before there were tabs is moved into sheets/ by
         -- this, which changes where its one sheet is written but nothing about
         -- what it says.  The tabs are rebuilt rather than added to, so that the
@@ -380,12 +383,13 @@ addSheet app name = do
 renameSheet :: App -> Tab -> String -> IO ()
 renameSheet app tab name = do
   workbook <- readIORef (appWorkbook app)
-  forM_ workbook $ \path -> do
+  forM_ workbook $ \open -> do
     old <- readIORef (tabName tab)
-    outcome <- try (renameWorkbookSheet path old name)
-    case outcome :: Either StoreError String of
+    outcome <- try (renameWorkbookSheet open old name)
+    case outcome :: Either StoreError (Workbook, String) of
       Left (StoreError why) -> notify app (T.pack why)
-      Right renamed -> do
+      Right (moved, renamed) -> do
+        writeIORef (appWorkbook app) (Just moved)
         writeIORef (tabName tab) renamed
         Adw.tabPageSetTitle (tabPage tab) (T.pack renamed)
         rewatch app
@@ -449,16 +453,21 @@ copyTo app directory wantsGit = do
       firstName <- readIORef (tabName first)
       outcome <- try $ do
         createWorkbook directory firstName
+        fresh <- resolveWorkbook directory >>= \resolved -> case resolved of
+          Just open -> pure open
+          -- createWorkbook made it a moment ago, so this cannot happen; saying
+          -- so out loud beats a pattern match that would throw without a word.
+          Nothing -> throwIO (StoreError ("Could not open " ++ directory))
         forM_ tabs $ \tab -> do
           name <- readIORef (tabName tab)
-          unless (name == firstName) (void (addWorkbookSheet directory name))
+          unless (name == firstName) (void (addWorkbookSheet fresh name))
         forM_ tabs $ \tab -> do
           name <- readIORef (tabName tab)
-          folder <- workbookSheetDirectory directory name
           view <- gridCurrentView (tabGrid tab)
           widths <- gridColumnWidths (tabGrid tab)
           sources <- readIORef (tabSources tab)
-          saveSheet folder (Sheet sources (viewRows view) (viewColumns view) widths)
+          saveSheet (workbookSheetDirectory fresh name)
+                    (Sheet sources (viewRows view) (viewColumns view) widths)
         names <- mapM (readIORef . tabName) tabs
         showing <- currentTab app >>= mapM (readIORef . tabName)
         writeWorkbookIndex directory names showing
@@ -466,11 +475,12 @@ copyTo app directory wantsGit = do
         Left _ -> notify app (T.pack ("Could not copy to " ++ takeFileName directory))
         Right () -> do
           when wantsGit (gitInit app directory)
-          writeIORef (appWorkbook app) (Just directory)
+          moved <- resolveWorkbook directory
+          writeIORef (appWorkbook app) moved
           writeIORef (appScratch app) False
           rewatch app
           retitle app
-          notify app (T.pack ("Now editing " ++ workbookName directory))
+          notify app (T.pack ("Now editing " ++ takeFileName directory))
 
 -- | Make a git repository of the workbook.  Around the workbook rather than
 -- around any one sheet, which is the whole reason a workbook exists.  A

@@ -33,6 +33,9 @@ module Cellar.Store
   , saveCell
   , cellFilePath
     -- * Workbooks
+  , Workbook (..)
+  , SheetLayout (..)
+  , resolveWorkbook
   , workbookDirectory
   , isWorkbookDirectory
   , workbookName
@@ -62,7 +65,10 @@ import Data.List (isSuffixOf, sort)
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.Directory
 import System.FilePath ((</>), takeFileName, takeDirectory, takeExtension)
-import System.IO (IOMode (..), hSetEncoding, hGetContents, utf8, withFile, hPutStr)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import System.IO (IOMode (..), hSetEncoding, utf8, withFile, hPutStr)
 
 import Cellar.Ref
 import Cellar.Sexp
@@ -215,18 +221,19 @@ primaryText rows columns widths =
 -- over its own writes.
 writeIfChanged :: FilePath -> String -> IO ()
 writeIfChanged path text = do
-  current <- try (readUtf8 path) :: IO (Either SomeException String)
+  current <- try (readUtf8 path) :: IO (Either SomeException Text)
   case current of
-    Right existing | existing == text -> pure ()
+    Right existing | existing == T.pack text -> pure ()
     _ -> withFile path WriteMode $ \handle -> do
            hSetEncoding handle utf8
            hPutStr handle text
 
-readUtf8 :: FilePath -> IO String
+-- | A file's contents as text, decoded as UTF-8 whatever the locale says.
+readUtf8 :: FilePath -> IO Text
 readUtf8 path = withFile path ReadMode $ \handle -> do
   hSetEncoding handle utf8
-  contents <- hGetContents handle
-  length contents `seq` pure contents
+  contents <- TIO.hGetContents handle
+  T.length contents `seq` pure contents
 
 -- Reading
 
@@ -256,13 +263,13 @@ readSheetCells directory = do
   names <- storedCellNames directory
   cells <- forM (sort names) $ \name -> do
     text <- readUtf8 (cellFilePath directory name)
-    pure (name, trim text)
+    pure (name, T.unpack (T.strip text))
   pure cells
 
 readSheetMetadata :: FilePath -> IO Sexp
 readSheetMetadata directory = do
   contents <- try (readUtf8 (directory </> primaryFile))
-                :: IO (Either SomeException String)
+                :: IO (Either SomeException Text)
   pure $ case contents of
     Left _ -> Nil
     Right text -> either (const Nil) id (parseSexp text)
@@ -309,6 +316,66 @@ trim = dropWhile isSpace' . reverse . dropWhile isSpace' . reverse
 
 -- Workbooks
 
+-- | An open workbook: where it is, and how its sheets are laid out inside it.
+--
+-- Resolved once, when the workbook is opened, and then answered from.  The
+-- alternative -- which this replaced -- was to take a 'FilePath' everywhere
+-- and work the layout out again on each call, which meant a @doesFileExist@
+-- per sheet per snapshot and put the older format in an @if@ rather than in
+-- the type.
+data Workbook = Workbook
+  { workbookRoot :: FilePath
+  , workbookLayout :: SheetLayout
+  } deriving (Eq, Show)
+
+-- | Where a workbook keeps its sheets.
+data SheetLayout
+    -- | The current format: a folder each, under @sheets/@.
+  = SheetsUnder
+    -- | Written before there were tabs: one sheet, lying at the top of the
+    -- workbook's own folder, and named after it.
+  | SingleSheet String
+  deriving (Eq, Show)
+
+-- | Work out the shape of the workbook a path names, or answer 'Nothing'
+-- when it names none.
+--
+-- This is the only function that looks at a folder to decide what shape it is
+-- in.  Everything after it is told.
+resolveWorkbook :: FilePath -> IO (Maybe Workbook)
+resolveWorkbook path = do
+  directory <- workbookDirectory path
+  isDir <- doesDirectoryExist directory
+  if not isDir then pure Nothing else do
+    indexed <- doesFileExist (directory </> workbookFile)
+    if indexed
+      then pure (Just (Workbook directory SheetsUnder))
+      else do
+        legacy <- doesFileExist (directory </> primaryFile)
+        pure $ if legacy
+          then Just (Workbook directory (SingleSheet (legacySheetName directory)))
+          else Nothing
+
+-- | Is this a workbook from before tabs?
+isFormatOne :: Workbook -> Bool
+isFormatOne workbook = case workbookLayout workbook of
+  SingleSheet _ -> True
+  SheetsUnder -> False
+
+-- | What to call the workbook in a window title.
+workbookName :: Workbook -> String
+workbookName = takeFileName . workbookRoot
+
+-- | The folder a sheet lives in.
+--
+-- In a workbook from before tabs that is the workbook's own folder, which is
+-- exactly what makes one readable where it lies.  Pure, because the layout was
+-- settled when the workbook was opened.
+workbookSheetDirectory :: Workbook -> String -> FilePath
+workbookSheetDirectory workbook name = case workbookLayout workbook of
+  SingleSheet _ -> workbookRoot workbook
+  SheetsUnder -> workbookRoot workbook </> sheetsDirectory </> name
+
 -- | The workbook directory a path names.  A workbook can be pointed at by its
 -- own folder, by its @workbook.scm@, or by the @sheet.scm@ of any sheet inside
 -- it, and all three arrive here as the folder.
@@ -339,17 +406,6 @@ isWorkbookDirectory path = do
   if not isDir then pure False else do
     indexed <- doesFileExist (directory </> workbookFile)
     if indexed then pure True else isSheetDirectory directory
-
--- | Is this a workbook from before tabs -- one sheet lying at the top of the
--- folder, with no index above it?
-isFormatOne :: FilePath -> IO Bool
-isFormatOne directory = do
-  indexed <- doesFileExist (directory </> workbookFile)
-  if indexed then pure False else doesFileExist (directory </> primaryFile)
-
--- | What to call the workbook in a window title.
-workbookName :: FilePath -> String
-workbookName = takeFileName
 
 -- | The folder's name without the extension: @budget.cellar@ becomes @budget@.
 bareName :: FilePath -> String
@@ -398,22 +454,18 @@ createWorkbook directory rawName = do
 
 -- | What the index says.  A workbook from before tabs has no index and answers
 -- as though it had one naming its single sheet.
-readWorkbookIndex :: FilePath -> IO Sexp
-readWorkbookIndex path = do
-  directory <- workbookDirectory path
-  legacy <- isFormatOne directory
-  if legacy
-    then do
-      let name = legacySheetName directory
-      pure (list [ Pair (Sym "format") (Num 1)
-                 , list [Sym "sheets", Str name]
-                 , Pair (Sym "active") (Str name) ])
-    else do
-      contents <- try (readUtf8 (directory </> workbookFile))
-                    :: IO (Either SomeException String)
-      pure $ case contents of
-        Left _ -> Nil
-        Right text -> either (const Nil) id (parseSexp text)
+readWorkbookIndex :: Workbook -> IO Sexp
+readWorkbookIndex workbook = case workbookLayout workbook of
+  SingleSheet name ->
+    pure (list [ Pair (Sym "format") (Num 1)
+               , list [Sym "sheets", Str name]
+               , Pair (Sym "active") (Str name) ])
+  SheetsUnder -> do
+    contents <- try (readUtf8 (workbookRoot workbook </> workbookFile))
+                  :: IO (Either SomeException Text)
+    pure $ case contents of
+      Left _ -> Nil
+      Right text -> either (const Nil) id (parseSexp text)
 
 -- | The sheets of a workbook, in the order the tabs should show them.
 --
@@ -423,11 +475,10 @@ readWorkbookIndex path = do
 -- rather than being a tab over a folder that is not there.  That makes the
 -- index a hint, which is the most that a file two people can edit at once
 -- should be.
-workbookSheetNames :: FilePath -> IO [String]
-workbookSheetNames path = do
-  directory <- workbookDirectory path
-  onDisk <- storedSheetNames directory
-  index <- readWorkbookIndex directory
+workbookSheetNames :: Workbook -> IO [String]
+workbookSheetNames workbook = do
+  onDisk <- storedSheetNames workbook
+  index <- readWorkbookIndex workbook
   let listed = [ name | name <- indexSheetNames index, name `elem` onDisk ]
       unlisted = sort [ name | name <- onDisk, name `notElem` listed ]
   pure (listed ++ unlisted)
@@ -438,23 +489,20 @@ indexSheetNames index = case lookupKey "sheets" index >>= toList of
   Just entries -> [ name | Str name <- entries, validSheetName name ]
 
 -- | The sheets that actually have a folder with a sheet in it.
-storedSheetNames :: FilePath -> IO [String]
-storedSheetNames directory = do
-  legacy <- isFormatOne directory
-  if legacy
-    then pure [legacySheetName directory]
-    else do
-      folders <- sheetFolderNames directory
-      filterM (\name -> isSheetDirectory (directory </> sheetsDirectory </> name))
-              folders
+storedSheetNames :: Workbook -> IO [String]
+storedSheetNames workbook = case workbookLayout workbook of
+  SingleSheet name -> pure [name]
+  SheetsUnder -> do
+    folders <- sheetFolderNames workbook
+    filterM (isSheetDirectory . workbookSheetDirectory workbook) folders
 
 -- | Every folder directly under @sheets/@, whether or not there is a sheet in
 -- it yet.
-sheetFolderNames :: FilePath -> IO [String]
-sheetFolderNames directory = do
-  legacy <- isFormatOne directory
-  if legacy then pure [] else do
-    let sheets = directory </> sheetsDirectory
+sheetFolderNames :: Workbook -> IO [String]
+sheetFolderNames workbook = case workbookLayout workbook of
+  SingleSheet _ -> pure []
+  SheetsUnder -> do
+    let sheets = workbookRoot workbook </> sheetsDirectory
     exists <- doesDirectoryExist sheets
     if not exists then pure [] else do
       entries <- listDirectory sheets
@@ -465,26 +513,16 @@ sheetFolderNames directory = do
 
 -- | The sheet whose tab was showing when the workbook was last written, or the
 -- first one when that sheet is no longer there.
-workbookActiveSheet :: FilePath -> IO (Maybe String)
-workbookActiveSheet path = do
-  names <- workbookSheetNames path
-  index <- readWorkbookIndex path
+workbookActiveSheet :: Workbook -> IO (Maybe String)
+workbookActiveSheet workbook = do
+  names <- workbookSheetNames workbook
+  index <- readWorkbookIndex workbook
   let stored = lookupKey "active" index >>= asString
   pure $ case stored of
     Just active | active `elem` names -> Just active
     _ -> case names of
       (first : _) -> Just first
       [] -> Nothing
-
--- | The folder a sheet lives in.  In a workbook from before tabs that is the
--- workbook's own folder, which is exactly what makes one readable where it
--- lies.
-workbookSheetDirectory :: FilePath -> String -> IO FilePath
-workbookSheetDirectory path name = do
-  directory <- workbookDirectory path
-  legacy <- isFormatOne directory
-  pure $ if legacy then directory
-                   else directory </> sheetsDirectory </> name
 
 -- | Every path that has to be watched for the workbook to notice a change to
 -- itself.
@@ -494,25 +532,24 @@ workbookSheetDirectory path name = do
 -- filled in a moment afterwards, and watching only the folders that are
 -- already sheets would mean hearing about that one while it was still empty
 -- and never hearing about it again.
-workbookWatchPaths :: FilePath -> IO [FilePath]
-workbookWatchPaths path = do
-  directory <- workbookDirectory path
-  let sheets = directory </> sheetsDirectory
-  folders <- sheetFolderNames directory
-  names <- workbookSheetNames directory
-  perSheet <- forM names $ \name -> do
-    sheet <- workbookSheetDirectory directory name
-    pure [cellsIn sheet, sheet </> primaryFile]
-  pure $ [directory </> workbookFile, sheets]
+workbookWatchPaths :: Workbook -> IO [FilePath]
+workbookWatchPaths workbook = do
+  let root = workbookRoot workbook
+      sheets = root </> sheetsDirectory
+  folders <- sheetFolderNames workbook
+  names <- workbookSheetNames workbook
+  let perSheet name =
+        let sheet = workbookSheetDirectory workbook name
+        in [cellsIn sheet, sheet </> primaryFile]
+  pure $ [root </> workbookFile, sheets]
       ++ map (sheets </>) folders
-      ++ concat perSheet
+      ++ concatMap perSheet names
 
 -- | Write which sheets there are and which one is showing.
 writeWorkbookIndex :: FilePath -> [String] -> Maybe String -> IO ()
-writeWorkbookIndex path names active = do
-  directory <- workbookDirectory path
-  createDirectoryIfMissing True directory
-  writeIfChanged (directory </> workbookFile) (indexText names active)
+writeWorkbookIndex root names active = do
+  createDirectoryIfMissing True root
+  writeIfChanged (root </> workbookFile) (indexText names active)
 
 indexText :: [String] -> Maybe String -> String
 indexText names active =
@@ -520,27 +557,25 @@ indexText names active =
   -- one or dragging a tab is a one-line diff rather than a rewritten file.
   ";; A Cellar workbook. Each sheet is a folder under sheets/.\n"
     ++ "((format . " ++ show workbookFormat ++ ")\n"
-    ++ " (sheets" ++ concatMap (\name -> "\n  " ++ writeSexp (Str name)) names ++ ")\n"
-    ++ " (active . " ++ writeSexp (Str (fromMaybe "" active)) ++ "))\n"
+    ++ " (sheets"
+    ++ concatMap (\name -> "\n  " ++ quoted name) names ++ ")\n"
+    ++ " (active . " ++ quoted (fromMaybe "" active) ++ "))\n"
+  where quoted = T.unpack . writeSexp . Str
 
 -- | Remember which tab was showing.  A workbook from before tabs has one sheet
 -- and no index to write this into, and does not miss it.
-setWorkbookActive :: FilePath -> String -> IO ()
-setWorkbookActive path name = do
-  directory <- workbookDirectory path
-  legacy <- isFormatOne directory
-  unless legacy $ do
-    names <- workbookSheetNames directory
-    writeWorkbookIndex directory names (Just name)
+setWorkbookActive :: Workbook -> String -> IO ()
+setWorkbookActive workbook name =
+  unless (isFormatOne workbook) $ do
+    names <- workbookSheetNames workbook
+    writeWorkbookIndex (workbookRoot workbook) names (Just name)
 
 -- | Remember the order the tabs are in.
-setWorkbookOrder :: FilePath -> [String] -> IO ()
-setWorkbookOrder path names = do
-  directory <- workbookDirectory path
-  legacy <- isFormatOne directory
-  unless legacy $ do
-    active <- workbookActiveSheet directory
-    writeWorkbookIndex directory names active
+setWorkbookOrder :: Workbook -> [String] -> IO ()
+setWorkbookOrder workbook names =
+  unless (isFormatOne workbook) $ do
+    active <- workbookActiveSheet workbook
+    writeWorkbookIndex (workbookRoot workbook) names active
 
 -- | Move a workbook from before tabs into @sheets/@, so that it can hold a
 -- second sheet.  Returns the name its one sheet now has.
@@ -552,91 +587,95 @@ setWorkbookOrder path names = do
 -- Nothing calls this until a second sheet is actually asked for.  A single
 -- sheet is perfectly readable where it lies, and rearranging somebody's
 -- repository on the way to merely opening it would be a rude way to say hello.
-migrateWorkbook :: FilePath -> IO String
-migrateWorkbook directory = do
-  let name = legacySheetName directory
-      target = directory </> sheetsDirectory </> name
-  createDirectoryIfMissing True (directory </> sheetsDirectory)
+migrateWorkbook :: Workbook -> String -> IO Workbook
+migrateWorkbook workbook name = do
+  let root = workbookRoot workbook
+      target = root </> sheetsDirectory </> name
+  createDirectoryIfMissing True (root </> sheetsDirectory)
   createDirectoryIfMissing True target
-  renameFile (directory </> primaryFile) (target </> primaryFile)
-  hasCells <- doesDirectoryExist (cellsIn directory)
-  when hasCells $ renameDirectory (cellsIn directory) (cellsIn target)
-  writeWorkbookIndex directory [name] (Just name)
-  pure name
+  renameFile (root </> primaryFile) (target </> primaryFile)
+  hasCells <- doesDirectoryExist (cellsIn root)
+  when hasCells $ renameDirectory (cellsIn root) (cellsIn target)
+  writeWorkbookIndex root [name] (Just name)
+  -- The layout has changed, and the type says so: everything holding the old
+  -- value is holding a description of a folder that no longer looks like that.
+  pure workbook { workbookLayout = SheetsUnder }
 
 -- | Is there already a sheet by this name?  Compared without regard to case,
 -- because on a good many filesystems @Q1@ and @q1@ would be one folder.
-taken :: FilePath -> String -> IO Bool
-taken directory name = do
-  names <- workbookSheetNames directory
+taken :: Workbook -> String -> IO Bool
+taken workbook name = do
+  names <- workbookSheetNames workbook
   pure (map toLower name `elem` map (map toLower) names)
 
 -- | Add an empty sheet, and return the name it was given.
-addWorkbookSheet :: FilePath -> String -> IO String
-addWorkbookSheet path rawName = do
-  directory <- workbookDirectory path
+-- | Add an empty sheet, and answer with the workbook as it now is and the name
+-- the sheet was given.  The workbook comes back because adding a second sheet
+-- to one written before there were tabs moves the first, and after that the
+-- folder is laid out differently than it was.
+addWorkbookSheet :: Workbook -> String -> IO (Workbook, String)
+addWorkbookSheet workbook rawName = do
   unless (validSheetName rawName) $
     refuse "A sheet needs a name, and not one with a / in it"
   let name = trim rawName
-  legacy <- isFormatOne directory
-  when legacy $ () <$ migrateWorkbook directory
-  clash <- taken directory name
+  moved <- case workbookLayout workbook of
+    SingleSheet only -> migrateWorkbook workbook only
+    SheetsUnder -> pure workbook
+  clash <- taken moved name
   when clash $
     refuse ("This workbook already has a sheet called " ++ name)
   -- Read the order before the folder exists, or the new sheet would be found
   -- on disk and appended to the index twice.
-  existing <- workbookSheetNames directory
-  createDirectoryIfMissing True (directory </> sheetsDirectory)
-  folder <- workbookSheetDirectory directory name
-  createSheetDirectory folder
-  writeWorkbookIndex directory (existing ++ [name]) (Just name)
-  pure name
+  existing <- workbookSheetNames moved
+  createDirectoryIfMissing True (workbookRoot moved </> sheetsDirectory)
+  createSheetDirectory (workbookSheetDirectory moved name)
+  writeWorkbookIndex (workbookRoot moved) (existing ++ [name]) (Just name)
+  pure (moved, name)
 
 -- | Rename a sheet, folder and all.  Returns the name it now has.
-renameWorkbookSheet :: FilePath -> String -> String -> IO String
-renameWorkbookSheet path old rawNew = do
-  directory <- workbookDirectory path
+-- | Rename a sheet, folder and all.  As with adding one, the workbook comes
+-- back, because renaming the only sheet of an older workbook moves it first.
+renameWorkbookSheet :: Workbook -> String -> String -> IO (Workbook, String)
+renameWorkbookSheet workbook old rawNew = do
   unless (validSheetName rawNew) $
     refuse "A sheet needs a name, and not one with a / in it"
   let new = trim rawNew
-  if old == new then pure new else do
-    legacy <- isFormatOne directory
-    when legacy $ () <$ migrateWorkbook directory
-    clash <- taken directory new
+  if old == new then pure (workbook, new) else do
+    moved <- case workbookLayout workbook of
+      SingleSheet only -> migrateWorkbook workbook only
+      SheetsUnder -> pure workbook
+    clash <- taken moved new
     when (clash && map toLower old /= map toLower new) $
       refuse ("This workbook already has a sheet called " ++ new)
-    names <- workbookSheetNames directory
+    names <- workbookSheetNames moved
     unless (old `elem` names) $ refuse ("There is no sheet called " ++ old)
-    active <- workbookActiveSheet directory
+    active <- workbookActiveSheet moved
     -- Both worked out before the folder moves, since neither can be read back
     -- afterwards under the name it was asked about.
-    oldFolder <- workbookSheetDirectory directory old
-    newFolder <- workbookSheetDirectory directory new
-    renameDirectory oldFolder newFolder
-    writeWorkbookIndex directory
+    renameDirectory (workbookSheetDirectory moved old)
+                    (workbookSheetDirectory moved new)
+    writeWorkbookIndex (workbookRoot moved)
       (map (\name -> if name == old then new else name) names)
       (if active == Just old then Just new else active)
-    pure new
+    pure (moved, new)
 
 -- | Delete a sheet, and return the sheets that are left.  Refuses to delete
 -- the last one: a workbook with nothing in it is not something the rest of the
 -- program can show.
-removeWorkbookSheet :: FilePath -> String -> IO [String]
-removeWorkbookSheet path name = do
-  directory <- workbookDirectory path
-  names <- workbookSheetNames directory
+removeWorkbookSheet :: Workbook -> String -> IO [String]
+removeWorkbookSheet workbook name = do
+  names <- workbookSheetNames workbook
   unless (name `elem` names) $ refuse ("There is no sheet called " ++ name)
   when (length names <= 1) $ refuse "A workbook has to keep at least one sheet"
-  active <- workbookActiveSheet directory
+  active <- workbookActiveSheet workbook
   active' <- case filter (/= name) names of
     -- Cannot happen: the refusal above is what guarantees it, and saying so in
     -- a pattern rather than in a comment is most of why this is Haskell now.
     [] -> refuse "A workbook has to keep at least one sheet"
     remaining@(first : _) -> do
-      folder <- workbookSheetDirectory directory name
-      removeSheetFiles folder
+      removeSheetFiles (workbookSheetDirectory workbook name)
       let stillShowing = if active == Just name then Just first else active
-      writeWorkbookIndex directory remaining stillShowing
+      writeWorkbookIndex (workbookRoot workbook) remaining stillShowing
       pure remaining
   pure active'
 
@@ -667,20 +706,18 @@ tryRemoveDirectory directory = do
 
 -- | A free name, or one with a different number after it.  What the Add Sheet
 -- dialog suggests.
-uniqueSheetName :: FilePath -> String -> IO String
-uniqueSheetName path base' = do
-  directory <- workbookDirectory path
+uniqueSheetName :: Workbook -> String -> IO String
+uniqueSheetName workbook base' = do
   let base = if validSheetName base' then trim base' else defaultSheetName
-  clash <- taken directory base
+  clash <- taken workbook base
   if not clash then pure base else do
     let (stem, n) = splitTrailingNumber base
-        candidates = [ stem ++ show k | k <- [n + 1 ..] ]
-    firstFree directory candidates
+    firstFree [ stem ++ show k | k <- [n + 1 ..] ]
   where
-    firstFree _ [] = pure defaultSheetName
-    firstFree directory (candidate : more) = do
-      clash <- taken directory candidate
-      if clash then firstFree directory more else pure candidate
+    firstFree [] = pure defaultSheetName
+    firstFree (candidate : more) = do
+      clash <- taken workbook candidate
+      if clash then firstFree more else pure candidate
 
 -- | A name split into what comes before a trailing number and the number
 -- itself, so that the sheet after @Sheet 2@ is @Sheet 3@ and the one after

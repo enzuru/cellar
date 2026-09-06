@@ -27,6 +27,7 @@ library
                       Cellar.Store
                       Cellar.View
                       Cellar.Config
+                      Cellar.External
                       Cellar.Client
     build-depends:    base              >= 4.17 && < 5
                     , bytestring
@@ -56,6 +57,7 @@ executable cellar
                       Cellar.Store
                       Cellar.View
                       Cellar.Config
+                      Cellar.External
                       Cellar.Client
     build-depends:    base              >= 4.17 && < 5
                     , bytestring
@@ -88,6 +90,7 @@ test-suite cellar-test
                       Cellar.Store
                       Cellar.View
                       Cellar.Config
+                      Cellar.External
                       Cellar.Client
     build-depends:    base              >= 4.17 && < 5
                     , bytestring

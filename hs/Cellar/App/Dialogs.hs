@@ -15,7 +15,7 @@ import Data.IORef
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeFileName)
 
 import Data.GI.Base
 import qualified GI.Adw as Adw
@@ -32,13 +32,27 @@ import Cellar.App.Kernel
 import Cellar.App.Workbook
 
 
+-- | Put an alert dialog up and do something with the answer.
+--
+-- This replaced three fields on the 'App' record.  A dialog whose response is
+-- handled by a callback wired once at startup has to leave a note somewhere
+-- saying what the answer will mean -- which sheet is being renamed, whether
+-- this is a copy or a new workbook, which page is waiting to close -- and that
+-- note is state which exists only between a question and its answer, in a
+-- record that lives as long as the window.  Asking here instead means the
+-- answer arrives where the question was asked, with everything it needs
+-- already in scope and nothing left behind afterwards.
+choose :: App -> Adw.AlertDialog -> (Text -> IO ()) -> IO ()
+choose app dialog continue =
+  Adw.alertDialogChoose dialog (Just (appWindow app))
+    (Nothing :: Maybe Gio.Cancellable) $ Just $ \_ result -> do
+      response <- Adw.alertDialogChooseFinish dialog result
+      continue response
+
 wireDialogs :: App -> Gtk.Button -> IO ()
 wireDialogs app editButton = do
-  newSheetDialog <- object (appBuilder app) "new_sheet_dialog" Adw.AlertDialog
   newSheetLocation <- object (appBuilder app) "new_sheet_location" Gtk.Button
   newSheetLocationLabel <- object (appBuilder app) "new_sheet_location_label" Gtk.Label
-  sheetNameDialog <- object (appBuilder app) "sheet_name_dialog" Adw.AlertDialog
-  deleteSheetDialog <- object (appBuilder app) "delete_sheet_dialog" Adw.AlertDialog
 
   _ <- on editButton #clicked $ do
     tab <- currentTab app
@@ -52,27 +66,6 @@ wireDialogs app editButton = do
   _ <- on newSheetLocation #clicked $ chooseFolder app $ \path -> do
     writeIORef (appLocation app) path
     Gtk.labelSetLabel newSheetLocationLabel (T.pack path)
-  _ <- on newSheetDialog #response $ \response ->
-    when (response == "create") (createNewWorkbook app)
-  _ <- on sheetNameDialog #response $ \response ->
-    when (response == "name") $ do
-      entry <- object (appBuilder app) "sheet_name_entry" Gtk.Entry
-      typed <- T.unpack . T.strip <$> Gtk.editableGetText entry
-      renaming <- readIORef (appRenaming app)
-      writeIORef (appRenaming app) Nothing
-      case renaming of
-        Just tab -> renameSheet app tab typed
-        Nothing -> addSheet app typed
-  _ <- on deleteSheetDialog #response $ \response -> do
-    pending <- readIORef (appPendingDelete app)
-    writeIORef (appPendingDelete app) Nothing
-    forM_ pending $ \(tab, page) ->
-      if response == "delete"
-        then do
-          deleted <- deleteSheet app tab
-          Adw.tabViewClosePageFinish (appTabView app) page deleted
-        else Adw.tabViewClosePageFinish (appTabView app) page False
-
   _ <- on (appTabView app) #closePage $ \page -> onClosePage app page
   _ <- on (appTabView app) #pageReordered $ \_ _ -> persistOrder app
   _ <- on (appTabView app) (PropertyNotify #selectedPage) $ \_ -> onTabSelected app
@@ -108,7 +101,6 @@ onClosePage app page = do
 
 askToDelete :: App -> Tab -> Adw.TabPage -> IO ()
 askToDelete app tab page = do
-  writeIORef (appPendingDelete app) (Just (tab, page))
   dialog <- object (appBuilder app) "delete_sheet_dialog" Adw.AlertDialog
   name <- readIORef (tabName tab)
   set dialog
@@ -116,12 +108,16 @@ askToDelete app tab page = do
     , #body := "The sheet's folder and every cell file in it are deleted from \
                \the workbook. Cellar cannot undo that — though if the workbook \
                \is a Git repository, Git can." ]
-  Adw.dialogPresent dialog (Just (appWindow app))
+  choose app dialog $ \response ->
+    if response == "delete"
+      then do
+        deleted <- deleteSheet app tab
+        Adw.tabViewClosePageFinish (appTabView app) page deleted
+      else Adw.tabViewClosePageFinish (appTabView app) page False
 
 
 askForSheetName :: App -> Maybe Tab -> IO ()
 askForSheetName app tab = do
-  writeIORef (appRenaming app) tab
   dialog <- object (appBuilder app) "sheet_name_dialog" Adw.AlertDialog
   entry <- object (appBuilder app) "sheet_name_entry" Gtk.Entry
   set dialog
@@ -139,14 +135,18 @@ askForSheetName app tab = do
       tabs <- readIORef (appTabs app)
       case workbook of
         Nothing -> pure firstSheetName
-        Just path -> uniqueSheetName path ("Sheet " ++ show (length tabs + 1))
+        Just open -> uniqueSheetName open ("Sheet " ++ show (length tabs + 1))
   Gtk.editableSetText entry (T.pack suggestion)
-  Adw.dialogPresent dialog (Just (appWindow app))
+  choose app dialog $ \response ->
+    when (response == "name") $ do
+      typed <- T.unpack . T.strip <$> Gtk.editableGetText entry
+      case tab of
+        Just t -> renameSheet app t typed
+        Nothing -> addSheet app typed
 
 
 askForNewWorkbook :: App -> String -> Bool -> IO ()
 askForNewWorkbook app suggestion copying = do
-  writeIORef (appCopying app) copying
   dialog <- object (appBuilder app) "new_sheet_dialog" Adw.AlertDialog
   nameEntry <- object (appBuilder app) "new_sheet_name" Gtk.Entry
   locationLabel <- object (appBuilder app) "new_sheet_location_label" Gtk.Label
@@ -161,17 +161,17 @@ askForNewWorkbook app suggestion copying = do
   Gtk.editableSetText nameEntry (T.pack suggestion)
   location <- readIORef (appLocation app)
   Gtk.labelSetLabel locationLabel (T.pack location)
-  Adw.dialogPresent dialog (Just (appWindow app))
+  choose app dialog $ \response ->
+    when (response == "create") (createNewWorkbook app copying)
 
 
-createNewWorkbook :: App -> IO ()
-createNewWorkbook app = do
+createNewWorkbook :: App -> Bool -> IO ()
+createNewWorkbook app copying = do
   nameEntry <- object (appBuilder app) "new_sheet_name" Gtk.Entry
   gitCheck <- object (appBuilder app) "new_sheet_git" Gtk.CheckButton
   typed <- T.unpack . T.strip <$> Gtk.editableGetText nameEntry
   location <- readIORef (appLocation app)
   wantsGit <- Gtk.checkButtonGetActive gitCheck
-  copying <- readIORef (appCopying app)
   let name = if null typed then "workbook" else typed
       directory = location </> workbookFolderName name
   if copying
@@ -185,7 +185,7 @@ createNewWorkbook app = do
           opened <- openWorkbook app directory
           when opened $ do
             persistFreshLayouts app
-            notify app (T.pack ("Created " ++ workbookName directory))
+            notify app (T.pack ("Created " ++ takeFileName directory))
 
 -- | Write every sheet of the workbook to a folder of its own and carry on
 -- editing it there.  The workbook you were in is left exactly as it was.
@@ -210,11 +210,30 @@ openPreferences :: App -> IO ()
 openPreferences app = do
   builder <- Gtk.builderNewFromFile (appUiDirectory app </> "preferences.ui")
   dialog <- object builder "preferences_dialog" Adw.PreferencesDialog
-  switch <- object builder "external_editor_row" Adw.SwitchRow
-  commandRow <- object builder "editor_command_row" Adw.EntryRow
+  switch <- object builder "external_editor_switch" Adw.SwitchRow
+  commandRow <- object builder "external_editor_command" Adw.EntryRow
+  overrideRow <- object builder "override_row" Adw.ActionRow
   config <- readIORef (appConfig app)
   Adw.switchRowSetActive switch (externalEditorEnabled config)
   Gtk.editableSetText commandRow (T.pack (externalEditorCommand config))
+
+  -- CELLAR_EDITOR wins over whatever is set here, so when it is set the dialog
+  -- says so rather than letting somebody change a preference that is not the
+  -- one in effect.
+  override <- editorOverride
+  case override of
+    NoOverride -> Gtk.widgetSetVisible overrideRow False
+    UseInternal -> do
+      Adw.actionRowSetSubtitle overrideRow
+        "CELLAR_EDITOR is set to nothing, so cells open in Cellar's own editor \
+        \however this is left."
+      Gtk.widgetSetVisible overrideRow True
+    UseCommand command -> do
+      Adw.actionRowSetSubtitle overrideRow
+        (T.pack ("CELLAR_EDITOR is set to " ++ command
+                 ++ ", so that is what cells open in however this is left."))
+      Gtk.widgetSetVisible overrideRow True
+
   let remember = do
         enabled <- Adw.switchRowGetActive switch
         command <- T.unpack <$> Gtk.editableGetText commandRow

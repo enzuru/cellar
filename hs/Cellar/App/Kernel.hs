@@ -16,13 +16,13 @@ import Data.IORef
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import System.FilePath (takeFileName)
-import System.Process (spawnProcess)
 
 import Data.GI.Base
 import qualified GI.Adw as Adw
 import qualified GI.GLib as GLib
 
 import Cellar.Client
+import Cellar.External (openExternalEditor)
 import Cellar.Config
 import Cellar.Editor
 import Cellar.Grid
@@ -229,20 +229,6 @@ editInternally app tab r = do
             , previewIsError = maybe False asBool (lookupKey "error" payload)
             }))
     (\text -> setCell app tab r text)
-
--- | Hand a cell to an external editor.  There is nothing to hand over but the
--- path: the editor opens @cells/B2.scm@, and saving in the editor saves the
--- cell, because the folder is watched.
-
-openExternalEditor :: String -> FilePath -> Ref -> IO (Maybe FilePath)
-openExternalEditor command directory r =
-  case editorArgv command (cellFilePath directory (refName r)) of
-    [] -> pure Nothing
-    (program : arguments) -> do
-      outcome <- try (void (spawnProcess program arguments))
-      pure $ case outcome :: Either SomeException () of
-        Left _ -> Nothing
-        Right () -> Just program
 
 -- Catching up with the disk
 

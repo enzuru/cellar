@@ -14,14 +14,16 @@ import Control.Monad (forM_, unless)
 import qualified Data.ByteString as B
 import Data.IORef
 import Data.List (isInfixOf, sort)
+import Data.Maybe (isJust)
+import qualified Data.Text as T
 import System.Directory
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
-import System.IO
 
 import Cellar.Client
 import Cellar.Config
+import Cellar.External
 import Cellar.Protocol
 import Cellar.Ref
 import Cellar.Sexp
@@ -56,27 +58,28 @@ main = do
   section "s-expressions"
   let roundTrip s = parseSexp (writeSexp s)
   forM_ sampleSexps $ \s ->
-    check failures ("round trip: " ++ take 48 (writeSexp s)) (Right s) (roundTrip s)
+    check failures ("round trip: " ++ T.unpack (T.take 48 (writeSexp s)))
+      (Right s) (roundTrip s)
   check failures "a dotted pair is a dotted pair"
-    (Right (Pair (Sym "rows") (Num 100))) (parseSexp "(rows . 100)")
+    (Right (Pair (Sym "rows") (Num 100))) (parseSexp (T.pack "(rows . 100)"))
   check failures "a proper list is not"
-    (Right (list [Sym "a", Sym "b"])) (parseSexp "(a b)")
-  check failures "the empty list" (Right Nil) (parseSexp "()")
-  check failures "booleans" (Right (list [Bool True, Bool False])) (parseSexp "(#t #f)")
-  check failures "a negative number" (Right (Num (-7))) (parseSexp "-7")
+    (Right (list [Sym "a", Sym "b"])) (parseSexp (T.pack "(a b)"))
+  check failures "the empty list" (Right Nil) (parseSexp (T.pack "()"))
+  check failures "booleans" (Right (list [Bool True, Bool False])) (parseSexp (T.pack "(#t #f)"))
+  check failures "a negative number" (Right (Num (-7))) (parseSexp (T.pack "-7"))
   check failures "comments and whitespace are skipped"
-    (Right (Sym "a")) (parseSexp "  ; a note\n  a  ")
+    (Right (Sym "a")) (parseSexp (T.pack "  ; a note\n  a  "))
   check failures "Guile's string escapes"
     (Right (Str "a \"quote\", a \\ and a\nnewline"))
-    (parseSexp "\"a \\\"quote\\\", a \\\\ and a\\nnewline\"")
-  check failures "a hex escape" (Right (Str "\a")) (parseSexp "\"\\x7;\"")
+    (parseSexp (T.pack "\"a \\\"quote\\\", a \\\\ and a\\nnewline\""))
+  check failures "a hex escape" (Right (Str "\a")) (parseSexp (T.pack "\"\\x7;\""))
   check failures "an alist reads as one"
     [("rows", Num 100), ("columns", Num 26)]
     (alist (list [Pair (Sym "rows") (Num 100), Pair (Sym "columns") (Num 26)]))
   check failures "an unterminated string is refused" True
-    (either (const True) (const False) (parseSexp "\"never ends"))
+    (either (const True) (const False) (parseSexp (T.pack "\"never ends")))
   check failures "and so is a stray close paren" True
-    (either (const True) (const False) (parseSexp ")"))
+    (either (const True) (const False) (parseSexp (T.pack ")")))
 
   section "protocol framing"
   let messages =
@@ -175,56 +178,64 @@ main = do
 
   do let path = inRoot "book.cellar"
      createWorkbook path "Summary"
-     names <- workbookSheetNames path
-     check failures "a new workbook has the sheet it was given" ["Summary"] names
-     active <- workbookActiveSheet path
+     book <- open path
+     check failures "a new workbook is of the current shape" False (isFormatOne book)
+     names <- workbookSheetNames book
+     check failures "with the sheet it was given" ["Summary"] names
+     active <- workbookActiveSheet book
      check failures "which is the one showing" (Just "Summary") active
-     _ <- addWorkbookSheet path "Q1"
-     _ <- addWorkbookSheet path "Q2"
-     ordered <- workbookSheetNames path
+     check failures "and its folder is worked out without asking the disk"
+       (path </> "sheets" </> "Summary") (workbookSheetDirectory book "Summary")
+     (book1, _) <- addWorkbookSheet book "Q1"
+     (book2, _) <- addWorkbookSheet book1 "Q2"
+     ordered <- workbookSheetNames book2
      check failures "added sheets keep their order" ["Summary", "Q1", "Q2"] ordered
-     clash <- try (addWorkbookSheet path "q1") :: IO (Either StoreError String)
+     clash <- try (addWorkbookSheet book2 "q1")
+                :: IO (Either StoreError (Workbook, String))
      check failures "a name differing only in case is refused" True (isLeft clash)
-     slash <- try (addWorkbookSheet path "a/b") :: IO (Either StoreError String)
+     slash <- try (addWorkbookSheet book2 "a/b")
+                :: IO (Either StoreError (Workbook, String))
      check failures "and so is one a folder cannot have" True (isLeft slash)
-     suggestion <- uniqueSheetName path "Q1"
+     suggestion <- uniqueSheetName book2 "Q1"
      check failures "a suggested name counts on from the last" "Q3" suggestion
-     summary <- uniqueSheetName path "Summary"
+     summary <- uniqueSheetName book2 "Summary"
      check failures "or gains a number when there was none" "Summary 2" summary
-     _ <- renameWorkbookSheet path "Q1" "First Quarter"
-     renamed <- workbookSheetNames path
+     (book3, _) <- renameWorkbookSheet book2 "Q1" "First Quarter"
+     renamed <- workbookSheetNames book3
      check failures "renaming keeps the order"
        ["Summary", "First Quarter", "Q2"] renamed
-     setWorkbookOrder path ["Q2", "Summary", "First Quarter"]
-     reordered <- workbookSheetNames path
+     setWorkbookOrder book3 ["Q2", "Summary", "First Quarter"]
+     reordered <- workbookSheetNames book3
      check failures "and the order can be set"
        ["Q2", "Summary", "First Quarter"] reordered
-     remaining <- removeWorkbookSheet path "Q2"
+     remaining <- removeWorkbookSheet book3 "Q2"
      check failures "removing answers with what is left"
        ["Summary", "First Quarter"] remaining
-     _ <- removeWorkbookSheet path "First Quarter"
-     lastOne <- try (removeWorkbookSheet path "Summary")
+     _ <- removeWorkbookSheet book3 "First Quarter"
+     lastOne <- try (removeWorkbookSheet book3 "Summary")
                   :: IO (Either StoreError [String])
      check failures "the last sheet cannot be removed" True (isLeft lastOne)
 
   do let path = inRoot "keepsake.cellar"
      createWorkbook path "Summary"
-     _ <- addWorkbookSheet path "Q1"
-     folder <- workbookSheetDirectory path "Q1"
+     book <- open path
+     (book', _) <- addWorkbookSheet book "Q1"
+     let folder = workbookSheetDirectory book' "Q1"
      writeFile (folder </> "README") "mine\n"
-     _ <- removeWorkbookSheet path "Q1"
+     _ <- removeWorkbookSheet book' "Q1"
      note <- doesFileExist (folder </> "README")
-     names <- workbookSheetNames path
+     names <- workbookSheetNames book'
      check failures "a note keeps its folder standing" True note
      check failures "but the sheet is no longer a tab" ["Summary"] names
 
   do let path = inRoot "hint.cellar"
      createWorkbook path "Summary"
-     _ <- addWorkbookSheet path "Q1"
+     book <- open path
+     (book', _) <- addWorkbookSheet book "Q1"
      -- As if someone else's commit had brought a sheet in and taken one away.
      createSheetDirectory (path </> "sheets" </> "Arrived")
      removeDirectoryRecursive (path </> "sheets" </> "Q1")
-     names <- workbookSheetNames path
+     names <- workbookSheetNames book'
      check failures "a sheet the index never heard of turns up"
        True ("Arrived" `elem` names)
      check failures "one whose folder went is dropped" False ("Q1" `elem` names)
@@ -233,22 +244,25 @@ main = do
      createSheetDirectory path
      saveSheet path (Sheet [("A1", "\"first\""), ("B2", "(* 6 7)")] 12 4 [(0, 120)])
      isWorkbook <- isWorkbookDirectory path
-     legacy <- isFormatOne path
-     names <- workbookSheetNames path
-     where' <- workbookSheetDirectory path "old"
+     book <- open path
+     names <- workbookSheetNames book
      indexed <- doesFileExist (path </> "workbook.scm")
      check failures "a workbook from before tabs is still a workbook" True isWorkbook
-     check failures "of the older shape" True legacy
+     check failures "of the older shape, and the type says which"
+       (SingleSheet "old") (workbookLayout book)
      check failures "with one sheet, named for the folder" ["old"] names
-     check failures "living where it always did" path where'
+     check failures "living where it always did"
+       path (workbookSheetDirectory book "old")
      check failures "and nothing written to say so" False indexed
      -- A second sheet is what moves it, and not before.
-     _ <- addWorkbookSheet path "Q1"
+     (book', _) <- addWorkbookSheet book "Q1"
+     check failures "adding a sheet changes the shape, and says so"
+       SheetsUnder (workbookLayout book')
      moved <- doesFileExist (path </> "sheets" </> "old" </> "sheet.scm")
      cleared <- doesFileExist (path </> "sheet.scm")
      nowIndexed <- doesFileExist (path </> "workbook.scm")
      migrated <- readSheet (path </> "sheets" </> "old")
-     both <- workbookSheetNames path
+     both <- workbookSheetNames book'
      check failures "adding a sheet moves the old one under sheets/" True moved
      check failures "the top of the workbook is clear" False cleared
      check failures "there is an index now" True nowIndexed
@@ -259,10 +273,42 @@ main = do
 
   do let path = inRoot "finding.cellar"
      createWorkbook path "Summary"
-     fromIndex <- workbookDirectory (path </> "workbook.scm")
-     fromSheet <- workbookDirectory (path </> "sheets" </> "Summary" </> "sheet.scm")
-     check failures "a workbook is found from its index" path fromIndex
-     check failures "and from a sheet inside it" path fromSheet
+     fromIndex <- resolveWorkbook (path </> "workbook.scm")
+     fromSheet <- resolveWorkbook (path </> "sheets" </> "Summary" </> "sheet.scm")
+     nothing <- resolveWorkbook (inRoot "not-a-workbook")
+     check failures "a workbook is found from its index"
+       (Just path) (workbookRoot <$> fromIndex)
+     check failures "and from a sheet inside it"
+       (Just path) (workbookRoot <$> fromSheet)
+     check failures "and a folder that is not one is not found"
+       Nothing (workbookRoot <$> nothing)
+
+  section "the external editor"
+  do let path = inRoot "editing.cellar"
+     createSheetDirectory path
+     saveSheet path (Sheet [("A1", "\"before\"")] 4 2 [])
+     -- A stand-in editor: it writes the cell it was handed and exits, which is
+     -- everything Cellar asks of a real one.
+     let stand = inRoot "stand-in-editor"
+     writeFile stand "#!/bin/sh\nprintf '\"after\"\\n' > \"$1\"\n"
+     permissions <- getPermissions stand
+     setPermissions stand permissions { executable = True }
+     started <- openExternalEditor stand path (Ref 0 0)
+     check failures "the editor was started" (Just stand) started
+     -- It is not waited for -- the folder is watched instead -- so the test
+     -- waits for the file the way Cellar waits for the watcher.
+     landed <- waitFor 100 $ do
+       text <- try (readFile (cellFilePath path "A1"))
+                 :: IO (Either SomeException String)
+       pure $ case text of
+         Right written | "after" `isInfixOf` written -> Just written
+         _ -> Nothing
+     check failures "and wrote the cell's own file" True (isJust landed)
+     missing <- openExternalEditor "no-such-editor-anywhere" path (Ref 0 0)
+     check failures "a command that is not there is refused, not thrown"
+       Nothing missing
+     check failures "and an empty command is refused too"
+       Nothing =<< openExternalEditor "   " path (Ref 0 0)
 
   section "the kernel, over a real pipe"
   kernelOk <- runKernelTests failures
@@ -287,6 +333,14 @@ check failures label expected actual
 
 section :: String -> IO ()
 section title = putStrLn ("-- " ++ title)
+
+-- | Resolve a workbook the tests have just made, and be loud if it is not one.
+open :: FilePath -> IO Workbook
+open path = do
+  resolved <- resolveWorkbook path
+  case resolved of
+    Just workbook -> pure workbook
+    Nothing -> error (path ++ " is not a workbook")
 
 isLeft :: Either a b -> Bool
 isLeft (Left _) = True
@@ -332,7 +386,7 @@ runKernelTests failures = do
       answers <- newIORef ([] :: [(String, String)])
       let remember key value = modifyIORef' answers ((key, value) :)
           ask op arguments' key = call kernel op arguments'
-            (\payload -> remember key (writeSexp payload))
+            (\payload -> remember key (T.unpack (writeSexp payload)))
             (\why -> remember key ("FAILED " ++ why))
           settle key = waitFor 200 $ do
             _ <- pump kernel

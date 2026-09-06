@@ -150,6 +150,11 @@ newGrid
   -> IO Grid
 newGrid widget view lineMenu onSelect onActivate onCommand = do
   rows <- Gtk.stringListNew (Just (map (T.pack . show) [0 .. viewRows view - 1]))
+  -- gtk_no_selection_new below takes ownership of the model, so the same care
+  -- is needed here as with the gestures: the grid goes on appending to this
+  -- list every time the sheet grows a row, and doing that through a handle we
+  -- had given away is reading a pointer we no longer hold.
+  ours <- retain Gtk.StringList rows
   provider <- Gtk.cssProviderNew
   display <- Gdk.displayGetDefault
   forM_ display $ \d ->
@@ -158,7 +163,7 @@ newGrid widget view lineMenu onSelect onActivate onCommand = do
     <$> newIORef view
     <*> newIORef (Ref 0 0)
     <*> newIORef []
-    <*> pure rows
+    <*> pure ours
     <*> newIORef (viewRows view)
     <*> newIORef []
     <*> pure onSelect
@@ -866,7 +871,7 @@ setCssClass widget name wanted
 -- disowned pointer".  It happens to work while the widget is alive, and would
 -- stop working the moment it was not.  Taking a reference first is what makes
 -- the captured handle ours for as long as the closure lives.
-retain :: (GObject a, TypedObject a, IsDescendantOf GObject.Object a)
+retain :: (GObject a, IsDescendantOf GObject.Object a)
        => (ManagedPtr a -> a) -> a -> IO a
 retain constructor object = GObject.objectRef object >>= unsafeCastTo constructor
 
