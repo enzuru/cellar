@@ -210,11 +210,9 @@ openPreferences :: App -> IO ()
 openPreferences app = do
   builder <- Gtk.builderNewFromFile (appUiDirectory app </> "preferences.ui")
   dialog <- object builder "preferences_dialog" Adw.PreferencesDialog
-  switch <- object builder "external_editor_switch" Adw.SwitchRow
   commandRow <- object builder "external_editor_command" Adw.EntryRow
   overrideRow <- object builder "override_row" Adw.ActionRow
   config <- readIORef (appConfig app)
-  Adw.switchRowSetActive switch (externalEditorEnabled config)
   Gtk.editableSetText commandRow (T.pack (externalEditorCommand config))
 
   -- CELLAR_EDITOR wins over whatever is set here, so when it is set the dialog
@@ -223,10 +221,10 @@ openPreferences app = do
   override <- editorOverride
   case override of
     NoOverride -> Gtk.widgetSetVisible overrideRow False
-    UseInternal -> do
+    UseDesktop -> do
       Adw.actionRowSetSubtitle overrideRow
-        "CELLAR_EDITOR is set to nothing, so cells open in Cellar's own editor \
-        \however this is left."
+        "CELLAR_EDITOR is set to nothing, so a cell opened elsewhere goes to \
+        \whatever the desktop opens text files with, however this is left."
       Gtk.widgetSetVisible overrideRow True
     UseCommand command -> do
       Adw.actionRowSetSubtitle overrideRow
@@ -235,12 +233,10 @@ openPreferences app = do
       Gtk.widgetSetVisible overrideRow True
 
   let remember = do
-        enabled <- Adw.switchRowGetActive switch
         command <- T.unpack <$> Gtk.editableGetText commandRow
-        let updated = Config enabled command
+        let updated = Config command
         writeIORef (appConfig app) updated
         saveConfig updated
-  _ <- on switch (PropertyNotify #active) (\_ -> remember)
   _ <- on commandRow #changed remember
   Adw.dialogPresent dialog (Just (appWindow app))
 
@@ -263,7 +259,8 @@ showAbout app = do
 shortcuts :: [(Text, Text)]
 shortcuts =
   [ ("Arrow keys / Tab", "Move the active cell")
-  , ("Double-click / Enter", "Edit the active cell's Guile source")
+  , ("Double-click / Enter / Ctrl+E", "Edit the active cell in Cellar")
+  , ("Ctrl+Shift+E", "Open the active cell's file in your text editor")
   , ("Ctrl+Return", "Apply, while in the editor")
   , ("Delete", "Clear the active cell")
   , ("Ctrl+Shift+Up / Down", "Move the active row up or down")

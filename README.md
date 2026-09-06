@@ -240,7 +240,8 @@ pieces.
 |Key                                |Action                    |
 |-----------------------------------|--------------------------|
 |Arrows, Tab, Page Up/Down, Home/End|Move the active cell      |
-|Double-click, or Enter             |Edit the active cell      |
+|Double-click, Enter, or Ctrl+E     |Edit the active cell in Cellar|
+|Ctrl+Shift+E                       |Open the active cell in your text editor|
 |Ctrl+Return                        |Apply, while in the editor|
 |Delete                             |Clear the active cell     |
 |Ctrl+Shift+Up/Down                 |Move the active row       |
@@ -298,20 +299,38 @@ is how it becomes a workbook you keep.
 
 ## Using your own editor
 
-Cellar's editor is not the only one you can use. Under **Preferences**
-(Ctrl+,) there is a switch for *Use an external editor* and a command to go
-with it. With that on, opening a cell runs your command on the cell's own file
-— `cells/B2.scm`, the very file the sheet is made of — so saving in your editor
-is saving the cell. The grid catches up the moment you save, with the editor
-still open.
+The cell bar has two buttons. The pencil (Enter, or Ctrl+E) opens the cell in
+Cellar's own editor. The folder beside it (**Ctrl+Shift+E**) opens the cell's
+file — `cells/B2.scm`, the very file the sheet is made of — in another program,
+which is whatever your desktop opens text files with: Text Editor on a stock
+GNOME. There is no preference to set first, and nothing to switch between: the
+two buttons are the two editors.
+
+Saving there is saving the cell. Cellar neither waits for the program to exit
+nor reads anything back from it — it watches the sheet folder instead — so
+`code` and `gedit` want no `--wait` and `emacsclient` is happier with `-n`.
+Leave the cell open in a buffer all afternoon and save whenever you like; each
+save lands in the sheet, with the program still open. Several cells can be open
+in several editors at once.
+
+An empty cell has no file until you open it: `saveCell` takes the file away
+when a cell is cleared, and no program can be handed a path that is not there.
+So opening an empty cell writes an empty file for the other program to open,
+and if you write nothing to it, the next save of that cell removes it again.
+
+### When the desktop's choice is not yours
+
+Under **Preferences** (Ctrl+,) there is one row: a **Command**. Name one and
+Ctrl+Shift+E runs that instead of asking the desktop. This is for the editors a
+desktop cannot express — a terminal one, or a running Emacs.
 
 `%s` in the command is where the file name goes. Without one it is added at the
 end, which is what most graphical editors want:
 
 |Command                        |What it opens                          |
 |-------------------------------|---------------------------------------|
+|(empty)                        |whatever your desktop opens text files with|
 |`gnome-text-editor`            |Text Editor, with the file as its argument|
-|`gedit`                        |gedit                                  |
 |`code`                         |VS Code                                |
 |`emacsclient -n`               |a frame on a running Emacs             |
 |`xterm -e vim %s`              |vim, in a terminal of its own          |
@@ -319,18 +338,15 @@ end, which is what most graphical editors want:
 One thing to watch for: a terminal editor needs a terminal. `vim` on its own has
 nowhere to draw, so wrap it as above.
 
-Your editor does **not** need to be told to wait. Cellar neither waits for it to
-exit nor reads anything back from it — it watches the sheet folder instead — so
-`code` and `gedit` want no `--wait`, and `emacsclient` is happier with `-n`.
-Leave the cell open in a buffer all afternoon and save whenever you like; each
-save lands in the sheet. Several cells can be open in several editors at once.
+The command is saved in `~/.config/cellar/config.scm`. `CELLAR_EDITOR`
+overrides it for one run — set it to a command to force that command, or to the
+empty string to force the desktop's own choice — and the preferences dialog
+says so when it is set. If the command cannot be started at all, Cellar says so
+in a toast; the pencil is still there, and it never depended on any of this.
 
-The preference is saved in `~/.config/cellar/config.scm`. `CELLAR_EDITOR`
-overrides it for one run — set it to a command to force an external editor, or
-to the empty string to force the built-in one — and the preferences dialog says
-so when it is set. If the command cannot be started at all, Cellar says so in a
-toast and opens its own editor rather than leaving you with a cell you cannot
-edit.
+Older config files carry an `external-editor-enabled` flag from when one button
+served both editors and a switch said which it meant. It is read straight past,
+the command beside it still stands, and the next save drops it.
 
 ## How the grid works
 
@@ -422,7 +438,7 @@ tests/gui-start-smoke.sh  the start screen, making a workbook, saving it
 tests/gui-tabs-smoke.sh   tabs, adding sheets, the format-1 migration
 tests/gui-kernel-smoke.sh a cell that will not finish, and surviving it
 tests/gui-drag-smoke.sh   dragging a row and a column, checked on disk
-tests/gui-editor-smoke.sh an external editor, and the preference that turns it on
+tests/gui-editor-smoke.sh an external editor, and the preference that names it
 tests/workbook.sh    fixtures: workbooks written out as the format documents them
 ```
 
@@ -678,8 +694,8 @@ Saving as you go, and catching up with the disk, are covered by `make smoke`.
 Its assertions are read off the sheet folder without anything ever having been
 saved: the cell edited in step 4 is in its own file, the reordering moved the
 files it moved, the inserted rows grew the primary file, and the widened column
-was remembered. The last step turns the external editor on through the
-preferences dialog, hands a cell to a stand-in editor that writes the cell's own
+was remembered. The last step names a stand-in editor in the preferences
+dialog, opens a cell with Ctrl+Shift+E so that editor writes the cell's own
 file, and then makes Cellar rewrite the sheet from memory — if the watcher had
 missed the edit, that would overwrite it, so the expression surviving is the
 proof that the reload happened.
@@ -695,13 +711,13 @@ back as reloads — with the file watcher traced, seventeen of eighteen wake-ups
 found the disk already saying what the model said, and the one that did not was
 the external editor's.
 
-The external editor is covered by the last step of `make smoke`, which turns it
-on through the preferences dialog and edits a cell with a stand-in editor that
-rewrites the file and exits; the cell, everything computed from it, and the file
+The external editor is covered by the last step of `make smoke`, which names a
+stand-in editor in the preferences dialog and opens a cell with it — the
+stand-in rewrites the file and exits; the cell, everything computed from it, and the file
 the next save writes all come back changed. Two paths that step does not cover
 were driven by hand the same way: `CELLAR_EDITOR` overriding the saved
 preference, and a command that does not exist, which reports itself in a toast
-and falls back to the built-in editor. `make check` covers the rest headlessly —
+— the pencil is still there, so there is nothing to fall back to. `make check` covers the rest headlessly —
 command splitting, `%s` substitution, and the preferences surviving a restart.
 
 Choosing a folder is the exception. Both *Open Workbook…* and the location

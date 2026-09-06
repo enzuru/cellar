@@ -51,6 +51,11 @@ menu primary_menu {
       label: _("_Clear Cell");
       action: "app.clear-cell";
     }
+
+    item {
+      label: _("Open Cell in _Text Editor");
+      action: "app.open-cell";
+    }
   }
 
   section {
@@ -314,8 +319,22 @@ Adw.ApplicationWindow main_window {
       }
 
       Gtk.Button edit_button {
-        label: _("Edit");
+        icon-name: "document-edit-symbolic";
         tooltip-text: _("Edit this cell's Guile source (Enter)");
+
+        styles [
+          "flat",
+        ]
+      }
+
+      Gtk.Button open_button {
+        icon-name: "document-open-symbolic";
+        tooltip-text: _("Open this cell's file in your text editor (Ctrl+Shift+E)");
+        action-name: "app.open-cell";
+
+        styles [
+          "flat",
+        ]
       }
     }
 

@@ -1,8 +1,8 @@
 -- | Preferences that outlive the session.
 --
 -- One small alist, written to @$XDG_CONFIG_HOME/cellar/config.scm@.  It holds
--- the only preference Cellar has: whether to hand cells to an external editor
--- instead of the built-in one, and what to run when it does.
+-- the only preference Cellar has: the command to open a cell with, for when
+-- the program the desktop would pick is not the one you want.
 --
 -- The file is s-expressions because the Guile shell wrote it that way and a
 -- change of language on this side is no reason to make somebody's config file
@@ -33,13 +33,21 @@ import System.FilePath ((</>), takeDirectory)
 
 import Cellar.Sexp
 
-data Config = Config
-  { externalEditorEnabled :: Bool
-  , externalEditorCommand :: String
+-- | The command Open runs on a cell, or empty for whatever the desktop opens
+-- text files with.
+--
+-- There used to be a switch beside it -- /use an external editor/ -- because
+-- one button had to serve both editors and something had to say which it meant.
+-- The cell bar has two buttons now: the pencil is always Cellar's own editor
+-- and the folder is always another program, so the only thing left to say is
+-- which other program, and a command that is empty answers that with \"the one
+-- you already open text files in\".
+newtype Config = Config
+  { externalEditorCommand :: String
   } deriving (Eq, Show)
 
 defaultConfig :: Config
-defaultConfig = Config False ""
+defaultConfig = Config ""
 
 -- | Where the preferences live.  @CELLAR_CONFIG@ overrides it, which is how
 -- the tests get a config file of their own.
@@ -65,13 +73,14 @@ loadConfig = do
     contents <- try (readUtf8 path) :: IO (Either SomeException Text)
     pure $ case contents of
       Left _ -> defaultConfig
+      -- A file from the version that had the switch has an
+      -- @external-editor-enabled@ key too.  It is read straight past rather
+      -- than rejected: the command in that file is still the command you
+      -- meant, and the next save drops the key.
       Right text -> case parseSexp text of
         Left _ -> defaultConfig
         Right value -> Config
-          { externalEditorEnabled =
-              maybe (externalEditorEnabled defaultConfig) asBool
-                (lookupKey "external-editor-enabled" value)
-          , externalEditorCommand =
+          { externalEditorCommand =
               fromMaybe (externalEditorCommand defaultConfig)
                 (lookupKey "external-editor-command" value >>= asString)
           }
@@ -86,13 +95,12 @@ saveConfig config = do
   where
     text = T.pack ";; Cellar preferences.\n" <> writeSexp value <> T.pack "\n"
     value = list
-      [ Pair (Sym "external-editor-enabled") (Bool (externalEditorEnabled config))
-      , Pair (Sym "external-editor-command") (Str (externalEditorCommand config))
-      ]
+      [ Pair (Sym "external-editor-command") (Str (externalEditorCommand config)) ]
 
 -- | What @CELLAR_EDITOR@ has to say, if anything.
 data EditorOverride
-  = UseInternal        -- ^ Set, but empty: force the built-in editor.
+  = UseDesktop         -- ^ Set, but empty: ignore the preference and let the
+                       --   desktop pick the program.
   | UseCommand String  -- ^ Set to a command: force that.
   | NoOverride         -- ^ Not set at all: the preference decides.
   deriving (Eq, Show)
@@ -102,22 +110,21 @@ editorOverride = do
   value <- lookupEnv "CELLAR_EDITOR"
   pure $ case value of
     Nothing -> NoOverride
-    Just raw | all isSpace raw -> UseInternal
+    Just raw | all isSpace raw -> UseDesktop
              | otherwise -> UseCommand (trim raw)
 
--- | The command to run instead of the built-in editor, or 'Nothing' to use the
--- built-in one.  @CELLAR_EDITOR@ wins over the saved preference: set it to a
--- command to force an external editor for one run, or to the empty string to
--- force the built-in one.
+-- | The command Open should run, or 'Nothing' for the program the desktop
+-- opens text files with.  @CELLAR_EDITOR@ wins over the saved preference: set
+-- it to a command to force that command for one run, or to the empty string to
+-- force the desktop's own choice.
 effectiveEditorCommand :: Config -> IO (Maybe String)
 effectiveEditorCommand config = do
   override <- editorOverride
   pure $ case override of
-    UseInternal -> Nothing
+    UseDesktop -> Nothing
     UseCommand command -> Just command
     NoOverride
-      | externalEditorEnabled config
-      , let command = trim (externalEditorCommand config)
+      | let command = trim (externalEditorCommand config)
       , not (null command) -> Just command
       | otherwise -> Nothing
 

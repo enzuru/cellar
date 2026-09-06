@@ -225,21 +225,21 @@ printf '(* 111 2)' > "$1"
 SCRIPT
 chmod +x "$EDITOR_SCRIPT"
 
-# Turn it on in the preferences: the switch, then the command beneath it. The
-# command row stays insensitive until the switch is on, so the order matters.
+# Name it in the preferences: one row now, the command Open runs. Without one
+# a cell would go to whatever the desktop opens text files with, which is
+# nothing under Xvfb.
 xdotool key ctrl+comma; sleep 4
-xdotool mousemove 779 372 click 1; sleep 2
-xdotool mousemove 500 427 click 1; sleep 1
+xdotool mousemove 550 400 click 1; sleep 1
 xdotool type --delay 30 "$EDITOR_SCRIPT %s"
 sleep 2
 shot 28-preferences
 xdotool key Escape; sleep 3
 
-# Now Enter on a cell hands that script the cell's own file, and what the script
-# writes there is the cell. Nothing is read back and nothing waits for the
-# script to exit: the folder is watched, and that is how the edit arrives.
+# Now Ctrl+Shift+E on a cell hands that script the cell's own file, and what the
+# script writes there is the cell. Nothing is read back and nothing waits for
+# the script to exit: the folder is watched, and that is how the edit arrives.
 xdotool mousemove 220 164 click 1; sleep 2
-xdotool key Return; sleep 8
+xdotool key ctrl+shift+e; sleep 8
 shot 29-external-editor-applied
 expect "the external editor wrote the cell's own file" \
   grep -rq '(\* 111 2)' "$SHEET/cells"

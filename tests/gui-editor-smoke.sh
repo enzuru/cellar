@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Drive the external editor, and the preferences that turn it on.
+# Drive the external editor, and the preference that names it.
 #
 # The preference is set the way a person would have left it -- in the config
-# file -- rather than by clicking the switch, because clicking it would be a
-# test of where the switch is on screen. What is being checked is the path from
-# that setting to a cell on disk: Cellar reads the preference, hands the cell's
-# own file to the command, and the folder watcher brings the edit back.
+# file -- rather than by typing into the dialog, because that would be a test of
+# where a row is on screen. What is being checked is the path from that setting
+# to a cell on disk: Cellar reads the command, hands the cell's own file to it,
+# and the folder watcher brings the edit back.
 #
 # The last step is the one that matters. After the editor has written the file,
 # Cellar is made to rewrite the whole sheet from what it is holding. If the
@@ -73,11 +73,13 @@ printf '"after"\n' > "$1"
 EOF
 chmod +x "$EDITOR_SCRIPT"
 
-# The preference, as somebody would have left it.
+# The preference, as somebody would have left it.  A command here is what Open
+# runs; without one it would be whatever the desktop opens text files with,
+# which under Xvfb is nothing at all.
 export CELLAR_CONFIG="$OUT/config.scm"
 cat > "$CELLAR_CONFIG" <<EOF
 ;; Cellar preferences.
-((external-editor-enabled . #t) (external-editor-command . "$EDITOR_SCRIPT"))
+((external-editor-command . "$EDITOR_SCRIPT"))
 EOF
 
 dbus-run-session -- "$CELLAR" "$WORKBOOK" > "$OUT/app.log" 2>&1 &
@@ -98,12 +100,12 @@ expect "it drew something" test -s "$OUT/2-preferences.png"
 xdotool key Escape; sleep 2
 
 echo "2. a cell goes to the external editor"
-# Ctrl+E edits the active cell. With the preference on, that is the command
-# above rather than the built-in editor, so no dialog opens and nothing here
-# has to type into one.
+# Ctrl+Shift+E opens the active cell elsewhere -- the command above, since the
+# preference names one -- while Ctrl+E is Cellar's own editor. No dialog opens
+# either way here, so nothing in this script has to type into one.
 # Column A, row 1: the cell the assertions below are about.
 xdotool mousemove 118 180 click 1; sleep 1
-xdotool key ctrl+e
+xdotool key ctrl+shift+e
 settle 30 holds "$SHEET/cells/A1.scm" '"after"'
 shot 3-edited
 expect "the editor wrote the cell's own file" holds "$SHEET/cells/A1.scm" '"after"'

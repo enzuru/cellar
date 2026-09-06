@@ -17,7 +17,7 @@ import Data.List (isInfixOf, sort)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
 import System.Directory
-import System.Environment (lookupEnv)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
 
@@ -162,6 +162,15 @@ main = do
      check failures "and the column widths" [(0, 104), (2, 180)] (sort (sheetWidths back))
      hasB1 <- doesFileExist (cellFilePath path "B1")
      check failures "an empty cell has no file" False hasB1
+     -- Which is why opening a cell in another program has to make one: a
+     -- path that is not there cannot be handed to anything.
+     made <- touchCell path "B1"
+     check failures "so opening one makes it" (cellFilePath path "B1") made
+     blank <- readFile made
+     check failures "empty, as the cell is" "" blank
+     kept <- touchCell path "A2"
+     held <- readFile kept
+     check failures "while a cell that has a file keeps what is in it" "7\n" held
 
   do let path = inRoot "mine.cellar"
      createSheetDirectory path
@@ -309,6 +318,36 @@ main = do
        Nothing missing
      check failures "and an empty command is refused too"
        Nothing =<< openExternalEditor "   " path (Ref 0 0)
+
+     -- The preference that decides which program Open hands a cell to.  There
+     -- used to be a switch beside the command; a config file written while it
+     -- existed still names the command somebody meant, so the command is what
+     -- is read out of it and the key that is gone is written back no more.
+     let legacy = inRoot "legacy-config.scm"
+     writeFile legacy
+       ";; Cellar preferences.\n\
+       \((external-editor-enabled . #f) (external-editor-command . \"gedit\"))\n"
+     setEnv "CELLAR_CONFIG" legacy
+     loaded <- loadConfig
+     check failures "an old config file keeps its command"
+       "gedit" (externalEditorCommand loaded)
+     saveConfig loaded
+     rewritten <- readFile legacy
+     check failures "and saving it drops the switch that went" False
+       ("external-editor-enabled" `isInfixOf` rewritten)
+     unsetEnv "CELLAR_EDITOR"
+     check failures "so the command in it is the one Open runs"
+       (Just "gedit") =<< effectiveEditorCommand loaded
+     -- CELLAR_EDITOR wins over it.  (Setting it to the empty string, which
+     -- means the desktop's own choice, cannot be tested from here: setEnv on
+     -- POSIX unsets a variable rather than emptying it.)
+     setEnv "CELLAR_EDITOR" "code"
+     check failures "unless CELLAR_EDITOR names another"
+       (Just "code") =<< effectiveEditorCommand loaded
+     unsetEnv "CELLAR_EDITOR"
+     check failures "and an empty preference means the desktop's too"
+       Nothing =<< effectiveEditorCommand (Config "  ")
+     unsetEnv "CELLAR_CONFIG"
 
   section "the kernel, over a real pipe"
   kernelOk <- runKernelTests failures

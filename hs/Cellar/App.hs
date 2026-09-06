@@ -155,6 +155,12 @@ installActions app application = do
     setCell app tab r ""
   define "edit-cell" ["<Control>e"] $ onSheet $ \tab ->
     gridActiveRef (tabGrid tab) >>= editCell app tab
+  -- The same letter, shifted: Ctrl+E edits the cell here, Ctrl+Shift+E edits
+  -- it elsewhere.  GNOME has no settled chord for handing a file to another
+  -- program, but this window already reads Ctrl+Shift as "the other one of
+  -- these" -- new workbook, rename sheet, copy to.
+  define "open-cell" ["<Control><Shift>e"] $ onSheet $ \tab ->
+    gridActiveRef (tabGrid tab) >>= openCellExternally app tab
 
   let moveLine axis delta = onSheet $ \tab -> do
         moved <- gridMoveLine (tabGrid tab) axis delta

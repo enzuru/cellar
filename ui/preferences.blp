@@ -9,13 +9,8 @@ Adw.PreferencesDialog preferences_dialog {
     title: _("Editing");
 
     Adw.PreferencesGroup editor_group {
-      title: _("Cell Editor");
-      description: _("By default a cell opens in Cellar's own editor. Point this at another program and Cellar will write the cell to a file, run the program on it, and take the file back as the cell when the program exits.");
-
-      Adw.SwitchRow external_editor_switch {
-        title: _("Use an external editor");
-        subtitle: _("Edit cells in another program instead of the built-in editor");
-      }
+      title: _("Opening a Cell Elsewhere");
+      description: _("The pencil in the cell bar opens a cell in Cellar's own editor; the folder beside it (Ctrl+Shift+E) opens the cell's file in another program. That is whatever your desktop opens text files with, unless you name a command here.");
 
       Adw.EntryRow external_editor_command {
         title: _("Command");

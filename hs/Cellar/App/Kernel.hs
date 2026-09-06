@@ -19,7 +19,9 @@ import System.FilePath (takeFileName)
 
 import Data.GI.Base
 import qualified GI.Adw as Adw
+import qualified GI.Gio as Gio
 import qualified GI.GLib as GLib
+import qualified GI.Gtk as Gtk
 
 import Cellar.Client
 import Cellar.External (openExternalEditor)
@@ -200,25 +202,12 @@ setSource name source sources =
        Just text -> without ++ [(name, text)]
 
 
+-- | Open a cell in Cellar's own editor.  This is what the pencil and Enter do,
+-- and all they do: choosing another program is the folder beside it, which is
+-- a button of its own rather than a preference that changes what this one
+-- means.
 editCell :: App -> Tab -> Ref -> IO ()
 editCell app tab r = do
-  config <- readIORef (appConfig app)
-  command <- effectiveEditorCommand config
-  directory <- tabDirectory app tab
-  case (command, directory) of
-    (Just external, Just path) -> do
-      started <- openExternalEditor external path r
-      case started of
-        Just program ->
-          notify app (T.pack ("Editing " ++ refName r ++ " in " ++ takeFileName program))
-        Nothing -> do
-          notify app "Could not start the external editor"
-          editInternally app tab r
-    _ -> editInternally app tab r
-
-
-editInternally :: App -> Tab -> Ref -> IO ()
-editInternally app tab r = do
   sources <- readIORef (tabSources tab)
   openCellEditor (appUiDirectory app) (appWindow app) r (lookup (refName r) sources)
     (\text continue ->
@@ -229,6 +218,74 @@ editInternally app tab r = do
             , previewIsError = maybe False asBool (lookupKey "error" payload)
             }))
     (\text -> setCell app tab r text)
+
+
+-- | Hand a cell to another program: the command in the preferences when there
+-- is one, and otherwise whatever the desktop opens text files with.
+--
+-- Nothing is read back either way.  The cell is a file in the sheet folder and
+-- that folder is watched, so saving in the other program is what reaches the
+-- grid -- with it still open, as often as you like.
+openCellExternally :: App -> Tab -> Ref -> IO ()
+openCellExternally app tab r = do
+  config <- readIORef (appConfig app)
+  command <- effectiveEditorCommand config
+  directory <- tabDirectory app tab
+  forM_ directory $ \path -> do
+    -- An empty cell has no file, and no program can be handed a path that is
+    -- not there, so opening one is what brings its file into being.
+    made <- try (touchCell path (refName r))
+    case made :: Either SomeException FilePath of
+      Left _ -> notify app (T.pack ("Could not write a file for " ++ refName r))
+      Right file -> case command of
+        Just external -> do
+          started <- openExternalEditor external path r
+          case started of
+            Just program ->
+              notify app (T.pack ("Editing " ++ refName r ++ " in " ++ takeFileName program))
+            Nothing -> notify app "Could not start the editor in the preferences"
+        Nothing -> openInDefaultTextEditor app file
+
+
+-- | Open a cell in the program the desktop opens text files with.
+--
+-- Text files, not Scheme files: asking for @text/x-scheme@ would land the cell
+-- in whatever is registered for source code, which on a developer's machine is
+-- an IDE, and the button says text editor.  When nothing is registered for
+-- plain text either, GTK's file launcher takes over and puts the desktop's own
+-- \"Open With\" chooser up rather than a toast saying no.
+openInDefaultTextEditor :: App -> FilePath -> IO ()
+openInDefaultTextEditor app file = do
+  gioFile <- Gio.fileNewForPath file
+  editor <- Gio.appInfoGetDefaultForType "text/plain" False
+  case editor of
+    Nothing -> askTheDesktop app file gioFile
+    Just info -> do
+      launched <- try (Gio.appInfoLaunch info [gioFile]
+                         (Nothing :: Maybe Gio.AppLaunchContext))
+      case launched :: Either SomeException () of
+        Right () -> do
+          name <- Gio.appInfoGetDisplayName info
+          notify app (T.pack ("Opened " ++ takeFileName file ++ " in ") <> name)
+        Left _ -> askTheDesktop app file gioFile
+
+
+-- | The fallback: let GTK ask, which is the \"Open With\" chooser on a desktop
+-- with nothing registered for the file, and the portal's version of it inside
+-- a sandbox.
+askTheDesktop :: App -> FilePath -> Gio.File -> IO ()
+askTheDesktop app file gioFile = do
+  launcher <- Gtk.fileLauncherNew (Just gioFile)
+  Gtk.fileLauncherLaunch launcher (Just (appWindow app))
+    (Nothing :: Maybe Gio.Cancellable) $ Just $ \_ result -> do
+      -- A failure here is a dismissed chooser as often as it is a desktop with
+      -- nothing to open the file with, so the toast says what happened rather
+      -- than guessing why.
+      outcome <- try (Gtk.fileLauncherLaunchFinish launcher result)
+      case outcome :: Either SomeException () of
+        Right () -> notify app (T.pack ("Opened " ++ takeFileName file))
+        Left _ -> notify app (T.pack ("Nothing opened " ++ takeFileName file))
+
 
 -- Catching up with the disk
 

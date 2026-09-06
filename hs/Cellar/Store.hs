@@ -31,6 +31,7 @@ module Cellar.Store
   , readSheetCells
   , readSheetMetadata
   , saveCell
+  , touchCell
   , cellFilePath
     -- * Workbooks
   , Workbook (..)
@@ -189,6 +190,22 @@ saveCell directory name source = do
     _ -> do
       exists <- doesFileExist file
       when exists $ removeFile file
+
+-- | Make sure a cell has a file, and answer with its path.  A cell that
+-- already has one is left exactly as it is.
+--
+-- An empty cell has no file -- 'saveCell' takes it away -- and another program
+-- cannot be handed a path that is not there.  Opening an empty cell elsewhere
+-- therefore starts by giving it an empty file to open; nothing is written to
+-- the cell by that, and the next save of an empty cell removes the file again.
+touchCell :: FilePath -> String -> IO FilePath
+touchCell directory name = do
+  createDirectoryIfMissing True directory
+  createDirectoryIfMissing True (cellsIn directory)
+  let file = cellFilePath directory name
+  exists <- doesFileExist file
+  unless exists $ withFile file WriteMode (\_ -> pure ())
+  pure file
 
 writeCell :: FilePath -> String -> String -> IO ()
 writeCell directory name source =
