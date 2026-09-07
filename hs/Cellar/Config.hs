@@ -1,8 +1,8 @@
 -- | Preferences that outlive the session.
 --
 -- One small alist, written to @$XDG_CONFIG_HOME/cellar/config.scm@.  It holds
--- the only preference Cellar has: the command to open a cell with, for when
--- the program the desktop would pick is not the one you want.
+-- the command to open a cell with, for when the program the desktop would pick
+-- is not the one you want, and the workbooks opened lately.
 --
 -- The file is s-expressions because the Guile shell wrote it that way and a
 -- change of language on this side is no reason to make somebody's config file
@@ -14,6 +14,8 @@ module Cellar.Config
   , loadConfig
   , saveConfig
   , effectiveEditorCommand
+  , recentLimit
+  , rememberRecent
   , EditorOverride (..)
   , editorOverride
   , splitCommand
@@ -42,12 +44,27 @@ import Cellar.Sexp
 -- and the folder is always another program, so the only thing left to say is
 -- which other program, and a command that is empty answers that with \"the one
 -- you already open text files in\".
-newtype Config = Config
+data Config = Config
   { externalEditorCommand :: String
+    -- | The workbooks opened lately, newest first.  Folders, because that is
+    -- what a workbook is, which is also why GTK's own recent-files list is no
+    -- use here: it is keyed on files, and it was deprecated in GTK 4.10
+    -- besides.  Ten paths in a preferences file is the whole of it.
+  , recentWorkbooks :: [FilePath]
   } deriving (Eq, Show)
 
 defaultConfig :: Config
-defaultConfig = Config ""
+defaultConfig = Config "" []
+
+-- | How many workbooks the list remembers.  Enough to hold a week of work,
+-- short enough to read without scrolling.
+recentLimit :: Int
+recentLimit = 10
+
+-- | Put a workbook at the front of the list, where it is the one opened last.
+-- A workbook already in the list moves rather than repeats.
+rememberRecent :: FilePath -> [FilePath] -> [FilePath]
+rememberRecent path paths = take recentLimit (path : filter (/= path) paths)
 
 -- | Where the preferences live.  @CELLAR_CONFIG@ overrides it, which is how
 -- the tests get a config file of their own.
@@ -83,6 +100,9 @@ loadConfig = do
           { externalEditorCommand =
               fromMaybe (externalEditorCommand defaultConfig)
                 (lookupKey "external-editor-command" value >>= asString)
+          , recentWorkbooks =
+              fromMaybe []
+                (lookupKey "recent-workbooks" value >>= toList >>= mapM asString)
           }
 
 saveConfig :: Config -> IO ()
@@ -95,7 +115,9 @@ saveConfig config = do
   where
     text = T.pack ";; Cellar preferences.\n" <> writeSexp value <> T.pack "\n"
     value = list
-      [ Pair (Sym "external-editor-command") (Str (externalEditorCommand config)) ]
+      [ Pair (Sym "external-editor-command") (Str (externalEditorCommand config))
+      , Pair (Sym "recent-workbooks") (list (map Str (recentWorkbooks config)))
+      ]
 
 -- | What @CELLAR_EDITOR@ has to say, if anything.
 data EditorOverride

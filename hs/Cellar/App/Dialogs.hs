@@ -233,7 +233,11 @@ openPreferences app = do
 
   let remember = do
         command <- T.unpack <$> Gtk.editableGetText commandRow
-        let updated = Config command
+        -- A record update rather than a fresh 'Config': the preferences hold
+        -- the recent workbooks too, and this window has nothing to say about
+        -- them.
+        current <- readIORef (appConfig app)
+        let updated = current { externalEditorCommand = command }
         writeIORef (appConfig app) updated
         saveConfig updated
   _ <- on commandRow #changed remember

@@ -32,6 +32,7 @@ import Cellar.View
 import Cellar.Watch
 import Cellar.App.Types
 import Cellar.App.Kernel
+import Cellar.App.Recent
 
 addTab :: App -> String -> IO Tab
 addTab app name = do
@@ -248,7 +249,16 @@ reloadTab app tab = do
 
 
 openWorkbook :: App -> FilePath -> IO Bool
-openWorkbook app path = do
+openWorkbook app path = openWorkbookAs app path True
+
+-- | Open a workbook, saying whether it joins the list of recent ones.
+--
+-- Everything that opens a workbook because somebody asked for that workbook
+-- remembers it.  A scratch workbook does not: it is made by a keypress and
+-- thrown away as often as it is kept, and ten of those would be a list with
+-- none of the workbooks you meant in it.
+openWorkbookAs :: App -> FilePath -> Bool -> IO Bool
+openWorkbookAs app path remembering = do
   resolved <- resolveWorkbook path
   case resolved of
     Nothing -> do
@@ -265,7 +275,9 @@ openWorkbook app path = do
         Left _ -> do
           notify app (T.pack ("Could not open " ++ workbookName open))
           pure False
-        Right () -> pure True
+        Right () -> do
+          when remembering (rememberWorkbook app (workbookRoot open))
+          pure True
 
 -- | Write the size of every sheet of a workbook Cellar has just made.  A sheet
 -- folder is created empty -- nought by nought -- while the sheet in front of
@@ -395,7 +407,7 @@ scratchWorkbook app = do
   case outcome :: Either SomeException () of
     Left _ -> notify app "Could not make a scratch workbook"
     Right () -> do
-      opened <- openWorkbook app directory
+      opened <- openWorkbookAs app directory False
       when opened $ do
         writeIORef (appScratch app) True
         persistFreshLayouts app
@@ -467,6 +479,10 @@ copyTo app directory wantsGit = do
           moved <- resolveWorkbook directory
           writeIORef (appWorkbook app) moved
           writeIORef (appScratch app) False
+          -- The copy is the workbook being edited from here on, so it is the
+          -- one the list should offer -- which matters most for a scratch
+          -- workbook, since this is the moment one stops being scratch.
+          rememberWorkbook app directory
           rewatch app
           retitle app
           notify app (T.pack ("Now editing " ++ takeFileName directory))

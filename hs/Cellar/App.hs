@@ -14,8 +14,10 @@ import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 
 import Data.GI.Base
+import qualified Data.Text as T
 import qualified GI.Adw as Adw
 import qualified GI.Gdk as Gdk
+import qualified GI.GLib as GLib
 import qualified GI.Gio as Gio
 import qualified GI.Gtk as Gtk
 import qualified GI.GtkSource as Source
@@ -28,6 +30,7 @@ import Cellar.Store
 import Cellar.App.Types
 import Cellar.App.Kernel
 import Cellar.App.Workbook
+import Cellar.App.Recent
 import Cellar.App.Dialogs
 
 
@@ -59,6 +62,10 @@ activate application file = do
   sourceLabel <- object builder "source_label" Gtk.Label
   editButton <- object builder "edit_button" Gtk.Button
   lineMenu <- optionalObject builder "line_menu" Gio.MenuModel
+  recentList <- object builder "recent_list" Gtk.ListBox
+  recentBox <- object builder "recent_box" Gtk.Box
+  -- Empty, and filled in from the preferences once the window is built.
+  recentSection <- Gio.menuNew
 
   (program, arguments) <- kernelCommandLine
   kernel <- startKernel program arguments
@@ -69,8 +76,8 @@ activate application file = do
   -- out of a row of `newIORef Nothing`, is one inserted field away from being
   -- silently wrong.
   app <- App window builder uiDirectory toasts tabView tabBar stack cellBar
-             recalculate windowTitle referenceLabel sourceLabel lineMenu kernel
-             config
+             recalculate windowTitle referenceLabel sourceLabel lineMenu
+             recentList recentBox recentSection kernel config
     <$> newIORef Nothing        -- appWorkbook
     <*> newIORef False          -- appScratch
     <*> newIORef Nothing        -- appWatcher
@@ -91,6 +98,7 @@ activate application file = do
   installPump app
   installActions app application
   wireDialogs app editButton
+  installRecent app
   showStartPage app
 
   Gtk.applicationAddWindow application window
@@ -178,6 +186,19 @@ installActions app application = do
   define "insert-row-after" ["<Control><Alt>Down"] (insertLine Row False)
   define "insert-column-before" ["<Control><Alt>Left"] (insertLine Column True)
   define "insert-column-after" ["<Control><Alt>Right"] (insertLine Column False)
+
+  -- A row on the start page and an item in the Open Recent submenu both fire
+  -- this, with the workbook's folder as the target -- which is why it is
+  -- defined by hand: it is the one action of Cellar's that takes one.
+  openRecent <- Gio.simpleActionNew "open-recent" . Just =<< GLib.variantTypeNew "s"
+  _ <- on openRecent #activate $ \parameter -> forM_ parameter $ \variant -> do
+         wanted <- fromGVariant variant
+         forM_ wanted $ \path -> do
+           opened <- openWorkbook app (T.unpack path)
+           -- A folder that will not open is one the list should stop offering.
+           unless opened (refreshRecent app)
+  Gio.actionMapAddAction application openRecent
+  define "clear-recent" [] (clearRecent app)
 
   define "preferences" ["<Control>comma"] (openPreferences app)
   define "shortcuts" ["<Control>question"] (showShortcuts app)

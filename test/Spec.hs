@@ -331,6 +331,8 @@ main = do
      loaded <- loadConfig
      check failures "an old config file keeps its command"
        "gedit" (externalEditorCommand loaded)
+     check failures "and has no recent workbooks in it"
+       [] (recentWorkbooks loaded)
      saveConfig loaded
      rewritten <- readFile legacy
      check failures "and saving it drops the switch that went" False
@@ -346,7 +348,21 @@ main = do
        (Just "code") =<< effectiveEditorCommand loaded
      unsetEnv "CELLAR_EDITOR"
      check failures "and an empty preference means the desktop's too"
-       Nothing =<< effectiveEditorCommand (Config "  ")
+       Nothing =<< effectiveEditorCommand (Config "  " [])
+
+     -- The workbooks opened lately, which the start page and the Open Recent
+     -- submenu are both drawn from.
+     let recentFile = inRoot "recent-config.scm"
+     setEnv "CELLAR_CONFIG" recentFile
+     saveConfig (Config "" [inRoot "one.cellar", inRoot "two.cellar"])
+     remembered <- loadConfig
+     check failures "the recent workbooks are written and read back"
+       [inRoot "one.cellar", inRoot "two.cellar"] (recentWorkbooks remembered)
+     check failures "opening one again moves it to the front rather than twice"
+       ["/b", "/a", "/c"] (rememberRecent "/b" ["/a", "/b", "/c"])
+     check failures "and the list stops where it was told to"
+       recentLimit
+       (length (foldr rememberRecent [] [ show n | n <- [1 .. 30 :: Int] ]))
      unsetEnv "CELLAR_CONFIG"
 
   section "the kernel, over a real pipe"

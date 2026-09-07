@@ -380,6 +380,34 @@ Adw.ApplicationWindow main_window {
                   "flat",
                 ]
               }
+
+              // The workbooks opened lately.  Filled in from the preferences
+              // file, and hidden until there is something to put in it -- see
+              // Cellar.App.Recent.
+              Gtk.Box recent_box {
+                orientation: vertical;
+                spacing: 6;
+                margin-top: 18;
+                width-request: 380;
+                visible: false;
+
+                Gtk.Label {
+                  label: _("Recent Workbooks");
+                  xalign: 0;
+
+                  styles [
+                    "heading",
+                  ]
+                }
+
+                Gtk.ListBox recent_list {
+                  selection-mode: none;
+
+                  styles [
+                    "boxed-list",
+                  ]
+                }
+              }
             };
           };
         }

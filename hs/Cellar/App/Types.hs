@@ -98,6 +98,13 @@ data App = App
   , appReferenceLabel :: Gtk.Label
   , appSourceLabel :: Gtk.Label
   , appLineMenu :: Maybe Gio.MenuModel
+    -- | The workbooks opened lately, in the two places they are shown: a boxed
+    -- list on the start page, and a section of the main menu that Cellar fills
+    -- in rather than the .ui file, because its length is not known until it is
+    -- read off the disk.  See "Cellar.App.Recent".
+  , appRecentList :: Gtk.ListBox
+  , appRecentBox :: Gtk.Box
+  , appRecentSection :: Gio.Menu
   , appKernel :: Kernel
   , appConfig :: IORef Config
     -- | The workbook being edited, or nothing when none is open.  Resolved

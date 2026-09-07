@@ -47,6 +47,7 @@ executable cellar
                       Cellar.App.Types
                       Cellar.App.Kernel
                       Cellar.App.Workbook
+                      Cellar.App.Recent
                       Cellar.App.Dialogs
                       Cellar.Grid
                       Cellar.Editor
