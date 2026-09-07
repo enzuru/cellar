@@ -38,6 +38,18 @@ ask :: App -> String -> [Sexp] -> (Sexp -> IO ()) -> IO ()
 ask app op arguments continue =
   call (appKernel app) op arguments continue (notify app . T.pack)
 
+-- | Ask the kernel about one sheet.
+--
+-- A sheet is named to the kernel by the name on its tab, because that is the
+-- name cells use: a cell that says @Summary!B2@ is asking for a sheet by name,
+-- and the kernel has to be able to answer.  Renaming a tab is therefore a
+-- request of its own rather than something the shell can keep to itself.
+
+askSheet :: App -> Tab -> String -> [Sexp] -> (Sexp -> IO ()) -> IO ()
+askSheet app tab op arguments continue = do
+  name <- readIORef (tabName tab)
+  ask app op (Str name : arguments) continue
+
 -- | Ask the kernel for nothing in particular, so that the first answer marks
 -- the end of starting up rather than the end of somebody's first edit.
 
@@ -148,9 +160,8 @@ reopenInKernel :: App -> Tab -> IO ()
 reopenInKernel app tab = do
   view <- gridCurrentView (tabGrid tab)
   sources <- readIORef (tabSources tab)
-  ask app "open"
-    [ Num (fromIntegral (tabId tab))
-    , Num (fromIntegral (max defaultRows (viewRows view)))
+  askSheet app tab "open"
+    [ Num (fromIntegral (max defaultRows (viewRows view)))
     , Num (fromIntegral (max defaultColumns (viewColumns view)))
     , sourcesSexp sources ]
     (takeSnapshot app tab)
@@ -161,18 +172,71 @@ sourcesSexp = list . map (\(name, source) -> Pair (Str name) (Str source))
 
 -- | Take what the kernel just said about a sheet and put it on screen.
 --
--- A snapshot carries sources only when the kernel rewrote them -- a move or an
--- insert -- because the shell already has the ones it sent.
+-- A snapshot carries sources only when the kernel rewrote them -- a move, an
+-- insert or a rename -- because the shell already has the ones it sent.  When
+-- it does carry them, they are what the sheet's files have to say, so they are
+-- written out here: that is the only place that knows the text changed without
+-- anybody typing.
+--
+-- An answer about one sheet is an answer about all of them.  Sheets name each
+-- other, so a number on Summary changes the moment the cell it reads does, and
+-- the kernel says so by sending the rest of the book along under @others@.
 
 takeSnapshot :: App -> Tab -> Sexp -> IO ()
 takeSnapshot app tab payload = do
-  forM_ (lookupKey "sources" payload) $ \sources ->
+  applySnapshot app tab payload
+  takeOthers app payload
+
+-- | The part of an answer that is about the sheets nobody asked after.
+--
+-- On its own when the sheet that was asked after has gone: closing one is an
+-- answer about the rest, and there is no tab left to put the first half of it
+-- in.
+
+takeOthers :: App -> Sexp -> IO ()
+takeOthers app payload =
+  forM_ (lookupKey "others" payload >>= toList) $ \snapshots ->
+    forM_ snapshots $ \snapshot ->
+      forM_ (lookupKey "sheet" snapshot >>= asString) $ \name -> do
+        found <- tabNamed app name
+        forM_ found $ \other -> applySnapshot app other snapshot
+
+
+applySnapshot :: App -> Tab -> Sexp -> IO ()
+applySnapshot app tab payload = do
+  let rewritten = lookupKey "sources" payload
+  forM_ rewritten $ \sources ->
     writeIORef (tabSources tab) (readSources sources)
   sources <- readIORef (tabSources tab)
   gridSetView (tabGrid tab) (viewFromSnapshot payload sources)
+  -- After the view and not before it: an insert makes the sheet a row taller,
+  -- and what goes in the file is the size the snapshot just brought.
+  forM_ rewritten (const (persistCells app tab))
   current <- currentTab app
   when (fmap tabId current == Just (tabId tab)) $
     gridActiveRef (tabGrid tab) >>= showSelection app
+
+-- | Write a whole sheet out: the size, the column widths, and a file for every
+-- cell that holds anything.
+--
+-- Moving a row, inserting a column or renaming a sheet rewrites the references
+-- inside cells -- on other sheets as well as this one -- so the cheapest
+-- correct answer for those is to write the lot.  It is a few dozen small files,
+-- and it deletes the ones left behind.
+
+persistLayout :: App -> Tab -> IO ()
+persistLayout app tab = do
+  directory <- tabDirectory app tab
+  forM_ directory $ \path -> do
+    view <- gridCurrentView (tabGrid tab)
+    widths <- gridColumnWidths (tabGrid tab)
+    sources <- readIORef (tabSources tab)
+    reportFailure app "save the sheet" $
+      saveSheet path (Sheet sources (viewRows view) (viewColumns view) widths)
+
+
+persistCells :: App -> Tab -> IO ()
+persistCells = persistLayout
 
 
 readSources :: Sexp -> [(String, String)]
@@ -185,8 +249,8 @@ readSources value = case toList value of
 setCell :: App -> Tab -> Ref -> String -> IO ()
 setCell app tab r text = do
   let name = refName r
-  ask app "set-cell"
-    [Num (fromIntegral (tabId tab)), Str name, Str text]
+  askSheet app tab "set-cell"
+    [Str name, Str text]
     (\payload -> do
        let source = lookupKey "source" payload >>= asString
        modifyIORef' (tabSources tab) (setSource name source)
@@ -211,8 +275,8 @@ editCell app tab r = do
   sources <- readIORef (tabSources tab)
   openCellEditor (appUiDirectory app) (appWindow app) r (lookup (refName r) sources)
     (\text continue ->
-       ask app "preview"
-         [Num (fromIntegral (tabId tab)), Str (refName r), Str text]
+       askSheet app tab "preview"
+         [Str (refName r), Str text]
          (\payload -> continue Preview
             { previewText = fromMaybe "" (lookupKey "written" payload >>= asString)
             , previewIsError = maybe False asBool (lookupKey "error" payload)

@@ -10,6 +10,10 @@
 ;;; sitting on when that row moves.  Nothing here evaluates anything, touches a
 ;;; sheet, or knows what a sheet is -- it is arithmetic on pairs of integers and
 ;;; the spelling of them, which is why it can sit under both sides at once.
+;;;
+;;; A reference to a cell on another sheet -- Summary!B2 -- is not here.  It is
+;;; spelled in (cellar model), because it names a sheet, and the shell is the
+;;; half that never reads what is inside a cell.
 
 (define-module (cellar ref)
   #:export (make-ref

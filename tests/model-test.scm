@@ -266,5 +266,137 @@
     (check "and a sheet too small to hold it grows on load" 5 (sheet-rows copy))
     (check "keeping the cell where it was" "2" (cell-display copy (name->ref "A5")))))
 
+
+;;;
+;;; Sheets naming each other
+;;;
+
+(format #t "-- one sheet reading another~%")
+
+(define book (make-book))
+(define sales (open-sheet! book "Sales" 10 4))
+(define quarter (open-sheet! book "Q1 2026" 10 4))
+(define summary (open-sheet! book "Summary" 10 4))
+
+(define (fill! sheet name text)
+  (set-cell-source! sheet (name->ref name) text))
+(define (says sheet name) (cell-display sheet (name->ref name)))
+(define (wrote sheet name) (cell-source sheet (name->ref name)))
+(define (why sheet name)
+  (let ((value (cell-value sheet (name->ref name))))
+    (and (cell-error? value) (cell-error-message value))))
+
+(fill! sales "A1" "10")
+(fill! sales "A2" "32")
+(fill! quarter "A1" "5")
+
+(fill! summary "A1" "(+ Sales!A1 Sales!A2)")
+(check "a plain name goes in front of the reference" "42" (says summary "A1"))
+
+(fill! summary "A2" "(cell 'Sales!A1)")
+(check "and works where a reference is expected" "10" (says summary "A2"))
+
+(fill! summary "A3" "(sum (range 'Sales!A1 'Sales!A2))")
+(check "including both corners of a range" "42" (says summary "A3"))
+
+(fill! summary "A4" "#{Q1 2026!A1}#")
+(check "a name with a space is the symbol it is" "5" (says summary "A4"))
+
+(fill! summary "A5" "(cell \"Q1 2026\" 'A1)")
+(check "or the sheet is a string and the cell a symbol" "5" (says summary "A5"))
+
+(fill! summary "A6" "(sum (range \"Q1 2026\" 'A1 'A2))")
+(check "which a range takes too" "5" (says summary "A6"))
+
+(fill! sales "A1" "100")
+(check "an edit on one sheet is seen from the other" "132" (says summary "A1"))
+
+(format #t "-- what it refuses~%")
+(fill! summary "B1" "Nowhere!A1")
+(check "a sheet that is not open" "Nowhere!A1: no sheet called \"Nowhere\" is open"
+       (why summary "B1"))
+(fill! summary "B2" "(cell 'Sales 'A1)")
+(check "a sheet named as a symbol" "cell: write the sheet as a string, Sales"
+       (why summary "B2"))
+(fill! summary "B5" "(cell \"a\\\"b\" 'A1)")
+(check "a sheet whose name has a quote in it, named as a string"
+       "cell: write \"a\\\"b\" in front of the reference, not as a string"
+       (why summary "B5"))
+(fill! summary "B4" "(cell \"Sales\" 'Sales!A1)")
+(check "and a reference that names a sheet twice"
+       "cell: Sales!A1 is already on a sheet" (why summary "B4"))
+(fill! summary "B3" "(range 'Sales!A1 'A2)")
+(check "and a range with a foot on each sheet"
+       "range: Sales!A1 and A2 are on different sheets"
+       (why summary "B3"))
+
+(format #t "-- a cycle that leaves the sheet~%")
+(fill! sales "C1" "Summary!C1")
+(fill! summary "C1" "Sales!C1")
+(check "is still a cycle" "#ERR" (says summary "C1"))
+(check "and the message says which sheet each cell is on"
+       "circular reference: Summary!C1 -> Sales!C1 -> Summary!C1"
+       (why summary "C1"))
+
+(format #t "-- rearranging a sheet other sheets are reading~%")
+(move-row! sales 0 3)
+(check "a reference elsewhere follows the row it names"
+       "(+ Sales!A4 Sales!A1)" (wrote summary "A1"))
+(check "so the total is what it was" "132" (says summary "A1"))
+(check "and a range elsewhere follows both its corners"
+       "(sum (range 'Sales!A4 'Sales!A1))" (wrote summary "A3"))
+
+(insert-row! quarter 0)
+(check "an insert pushes the awkward spelling down too"
+       "#{Q1 2026!A2}#" (wrote summary "A4"))
+(check "and the reference written as a string"
+       "(cell \"Q1 2026\" 'A2)" (wrote summary "A5"))
+(check "which still reads the cell it always did" "5" (says summary "A5"))
+
+(insert-row! summary 0)
+(check "while a reference to another sheet stays where it is"
+       "(cell \"Q1 2026\" 'A2)" (wrote summary "A6"))
+
+(format #t "-- renaming a sheet~%")
+(rename-sheet! book "Sales" "Total Sales")
+(check "a plain name that is no longer plain becomes the symbol it is"
+       "(+ #{Total Sales!A4}# #{Total Sales!A1}#)" (wrote summary "A2"))
+(check "and the value is untouched by the renaming" "132" (says summary "A2"))
+(rename-sheet! book "Q1 2026" "Q1")
+(check "a name written as a string is rewritten as one"
+       "(cell \"Q1\" 'A2)" (wrote summary "A6"))
+(check "the book knows both new names" '("Q1" "Summary" "Total Sales")
+       (book-sheet-names book))
+
+(format #t "-- a sheet can be called nearly anything~%")
+
+;; A sheet name is nearly free-form -- the store refuses a slash and little
+;; else -- and every one of them has to survive being written in front of a
+;; reference, read back, and rewritten when the sheet it names is rearranged.
+;; The names below are the ones that broke it: a comma, a quote and a backquote
+;; are all ordinary in a Guile symbol and all end a token here.
+(define %awkward-names
+  '("Sales" "Q1 2026" "a\"b" "a\\b" "a}#b" "a{b" "a#b" "1" "#1" "a;b" "a,b"
+    "a`b" "a[b]" "Wow!" "a'b" "a(b)"))
+
+(for-each
+ (lambda (name)
+   (let* ((b (make-book))
+          (target (open-sheet! b name 6 3))
+          (home (open-sheet! b "Home" 6 3))
+          (token (reference-token name (name->ref "A2"))))
+     (set-cell-source! target (name->ref "A2") "7")
+     (set-cell-source! home (name->ref "A1") (string-append "(+ " token " 1)"))
+     (let ((before (cell-display home (name->ref "A1"))))
+       (insert-row! target 0)
+       (check (format #f "~s reads, and goes on reading after an insert" name)
+              '("8" "8")
+              (list before (cell-display home (name->ref "A1")))))))
+ %awkward-names)
+
+(format #t "-- closing a sheet~%")
+(close-sheet! book "Q1")
+(check "leaves what read it saying so" "#ERR" (says summary "A6"))
+
 (format #t "~%~a~%" (if (zero? failures) "ALL TESTS PASSED" (format #f "~a FAILURE(S)" failures)))
 (exit (if (zero? failures) 0 1))

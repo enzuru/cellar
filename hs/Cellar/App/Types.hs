@@ -71,8 +71,10 @@ patienceSeconds = 10
 
 data Tab = Tab
   { tabName :: IORef String
-    -- | What the kernel calls this sheet: a number, handed out once and never
-    -- reused, because the kernel must not care that a tab can be renamed.
+    -- | The shell's own name for this tab: a number, handed out once and never
+    -- reused, so that two handles on the same tab can be compared while the
+    -- name on it is being changed.  The kernel is told the name instead, since
+    -- the name is what cells use -- see 'Cellar.App.Kernel.askSheet'.
   , tabId :: Int
   , tabPage :: Adw.TabPage
   , tabGrid :: Grid

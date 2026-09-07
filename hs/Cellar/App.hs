@@ -24,7 +24,6 @@ import Cellar.Client
 import Cellar.Config
 import Cellar.Grid
 import Cellar.Ref
-import Cellar.Sexp
 import Cellar.Store
 import Cellar.App.Types
 import Cellar.App.Kernel
@@ -145,7 +144,7 @@ installActions app application = do
   define "next-sheet" ["<Control>Page_Down"] (onSheet (const (stepSheet app 1)))
   define "previous-sheet" ["<Control>Page_Up"] (onSheet (const (stepSheet app (-1))))
   define "recalculate" ["<Control>r"] $ onSheet $ \tab ->
-    ask app "recalculate" [Num (fromIntegral (tabId tab))] $ \payload -> do
+    askSheet app tab "recalculate" [] $ \payload -> do
       takeSnapshot app tab payload
       notify app "Recalculated"
   define "clear-cell" ["Delete"] $ onSheet $ \tab -> do

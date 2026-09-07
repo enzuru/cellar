@@ -25,7 +25,6 @@ import qualified GI.Gtk as Gtk
 import Cellar.Client
 import Cellar.Config
 import Cellar.Grid
-import Cellar.Sexp
 import Cellar.Store
 import Cellar.App.Types
 import Cellar.App.Kernel
@@ -60,7 +59,7 @@ wireDialogs app editButton = do
   _ <- on (appRecalculate app) #clicked $ do
     tab <- currentTab app
     forM_ tab $ \t ->
-      ask app "recalculate" [Num (fromIntegral (tabId t))] $ \payload -> do
+      askSheet app t "recalculate" [] $ \payload -> do
         takeSnapshot app t payload
         notify app "Recalculated"
   _ <- on newSheetLocation #clicked $ chooseFolder app $ \path -> do

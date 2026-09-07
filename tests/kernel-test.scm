@@ -170,6 +170,55 @@
          '(("A2" . "2") ("A3" . "1") ("B3" . "(+ A3 A2)"))
          (payload 'sources answer)))
 
+(format #t "-- sheets that name each other~%")
+
+(define (other-named name answer)
+  "The snapshot of the sheet called NAME that came along with ANSWER."
+  (let loop ((others (payload 'others answer)))
+    (cond ((not (pair? others)) #f)
+          ((equal? (assq-ref (car others) 'sheet) name) (car others))
+          (else (loop (cdr others))))))
+
+(ask 'open "Books" 6 3 '(("A1" . "20") ("A2" . "22")))
+(let ((answer (ask 'open "Ledger" 6 3
+                   '(("A1" . "(+ Books!A1 Books!A2)")
+                     ("A2" . "(cell \"Books\" 'A1)")))))
+  (check "a cell reads a cell on another sheet"
+         '("A1" "42" #t #f #f #f)
+         (assoc "A1" (payload 'cells answer)))
+  (check "and the sheets it was opened beside come back with it"
+         "Books"
+         (and (other-named "Books" answer) "Books")))
+
+(let ((answer (ask 'set-cell "Books" "A1" "100")))
+  (check "an edit to one sheet is answered for the others"
+         '("A1" "122" #t #f #f #f)
+         (assoc "A1" (payload 'cells (other-named "Ledger" answer))))
+  (check "which do not carry sources, because nothing rewrote them"
+         #f
+         (assq-ref (other-named "Ledger" answer) 'sources)))
+
+(let ((answer (ask 'move "Books" 'row 0 1)))
+  (check "a move rewrites the references on other sheets"
+         '(("A1" . "(+ Books!A2 Books!A1)") ("A2" . "(cell \"Books\" 'A2)"))
+         (assq-ref (other-named "Ledger" answer) 'sources))
+  (check "and leaves them saying what they said"
+         '("A1" "122" #t #f #f #f)
+         (assoc "A1" (payload 'cells (other-named "Ledger" answer)))))
+
+(let ((answer (ask 'rename "Books" "Old Books")))
+  (check "a rename says so wherever the sheet is named"
+         '(("A1" . "(+ #{Old Books!A2}# #{Old Books!A1}#)")
+           ("A2" . "(cell \"Old Books\" 'A2)"))
+         (assq-ref (other-named "Ledger" answer) 'sources))
+  (check "and the renamed sheet answers to its new name" 6
+         (payload 'rows (ask 'snapshot "Old Books"))))
+
+(let ((answer (ask 'close "Old Books")))
+  (check "closing a sheet leaves what read it in error"
+         "#ERR"
+         (cadr (assoc "A1" (payload 'cells (other-named "Ledger" answer))))))
+
 (format #t "-- refusing what it cannot do~%")
 (check "a sheet that is not open"
        '(failed "no sheet called \"nope\" is open")
@@ -183,6 +232,12 @@
 (check "a move that goes nowhere"
        '(failed "that line is already at the edge")
        (ask 'move "R" 'row 0 0))
+(check "a sheet named with something that is not a string"
+       '(failed "a sheet is named with a string, not 7")
+       (ask 'open 7 4 4 '()))
+(check "a rename onto a name already in use"
+       '(failed "a sheet called \"R\" is already open")
+       (ask 'rename "Ledger" "R"))
 (check "and it is still answering afterwards" '() (ask 'ping))
 
 (format #t "-- closing~%")

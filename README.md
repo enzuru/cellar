@@ -7,7 +7,8 @@ An Adwaita spreadsheet app for GNOME that uses Guile Scheme expressions instead 
 Every cell holds a **GNU Guile expression**. Double-click a cell and a real code
 editor opens; whatever you write there is the cell. References like `A1` are
 ordinary variables, so a cell can say `(+ A1 B1)` — or `(apply + (map (lambda (n)
-(* n n)) (iota 10)))`, or anything else Guile can do.
+(* n n)) (iota 10)))`, or anything else Guile can do. `Sales!B2` is one too, and
+reads the cell on the tab called Sales.
 
 Cellar is two programs. The **shell** — the window, the folder on disk, the
 tabs — is Haskell, built with GTK4 and libadwaita through
@@ -58,13 +59,18 @@ instance. See the note under [Notes on haskell-gi](#notes-on-haskell-gi).
 |`(+ A1 A2)`                   |the sum of two other cells       |
 |`(string-upcase "hello")`     |`HELLO`                          |
 |`(sum (range 'A1 'A10))`      |the sum of a rectangular range   |
+|`(+ Sales!B2 Sales!B3)`       |two cells on the sheet called Sales|
+|`(cell "Q1 2026" 'B2)`        |a cell on a sheet whose name has a space|
 |`(if (> A1 100) 'over 'under)`|a symbol                         |
 |`(sort (list C1 C2 C3) <)`    |a list — all of Guile is in scope|
 |`(styled 42 #:background "red")`|`42`, on a red ground            |
 
 Bare references are bound automatically: any symbol in your code that looks like
 a cell (`A1`, `AA30`) is bound to that cell's value before your expression runs.
-Quoted data is untouched, so `'(A1 B1)` is still a list of two symbols.
+A symbol with a sheet in front of it (`Sales!B2`) is bound the same way, to the
+cell of that name on that tab; see [Sheets that name each
+other](#sheets-that-name-each-other). Quoted data is untouched, so `'(A1 B1)` is
+still a list of two symbols.
 
 Where a helper needs the cell rather than its value, quote it: `'A1`. That is
 the one way to write a reference — a string is only ever text — so a reference
@@ -74,7 +80,9 @@ reference has to arrive as a symbol too, by way of `string->symbol`.
 Alongside all of `(guile)`, cells get a few helpers:
 
 - `(cell 'A1)` — a cell's value, when you need to compute which cell
+- `(cell "Q1 2026" 'B2)` — a cell on another sheet, named as a string
 - `(range 'A1 'B10)` — a flat list of values over a rectangle
+- `(range "Q1 2026" 'B2 'B9)` — the same, over a rectangle on another sheet
 - `(sum …)`, `(product …)`, `(average …)` / `(avg …)`, `(count …)`,
   `(cell-min …)`, `(cell-max …)` — these flatten their arguments and skip
   empty cells, so `(sum (range 'A1 'A10))` does the obvious thing
@@ -83,7 +91,9 @@ Alongside all of `(guile)`, cells get a few helpers:
 
 Errors stay local: a failing cell shows `#ERR` with the message in its tooltip,
 and the rest of the sheet keeps working. Circular references are detected and
-reported as the cycle they form, e.g. `A1 -> B1 -> A1`.
+reported as the cycle they form, e.g. `A1 -> B1 -> A1`, or
+`Summary!C1 -> Sales!C1 -> Summary!C1` when the cycle goes round more than one
+sheet.
 
 ## Colour
 
@@ -191,10 +201,17 @@ resizing and uncovering the window are free, and the last good snapshot survives
 its kernel.
 
 ```
-shell -> kernel   (request 12 set-cell "3" "D6" "(sum (range 'D2 'D4))")
-kernel -> shell   (reply 12 ((sheet . "3") (rows . 100) (columns . 26)
-                             (cells ("D6" "580.93" #t #f #f #f))))
+shell -> kernel   (request 12 set-cell "Summary" "D6" "(sum (range 'D2 'D4))")
+kernel -> shell   (reply 12 ((sheet . "Summary") (rows . 100) (columns . 26)
+                             (cells ("D6" "580.93" #t #f #f #f))
+                             (others ((sheet . "Sales") …))))
 ```
+
+A sheet is named to the kernel by the name on its tab, because that is the name
+cells use: a cell that says `Summary!B2` is asking for a sheet by name. Renaming
+a tab is therefore a request of its own. An answer about one sheet carries the
+rest of the book under `others`, because an edit to one sheet changes what the
+cells reading it come to, and the shell has no evaluator to work that out.
 
 Messages are s-expressions with a byte count in front, which is what lets the
 shell read without ever blocking: it looks at what has arrived, decides whether
@@ -230,10 +247,48 @@ with nothing in it. What it deletes is only what Cellar wrote: a `README` you
 left in a sheet's folder keeps the folder standing, empty of a sheet and so no
 longer a tab, rather than being taken down with it.
 
-Sheets do not see each other. A cell is evaluated in its own sheet's sandbox,
-and `A1` in one tab is nothing to do with `A1` in the next; what tabs give you
-is several spreadsheets under one history, not one spreadsheet in several
-pieces.
+### Sheets that name each other
+
+A cell on one sheet can read a cell on another. The name it uses is the name on
+the tab:
+
+```scheme
+(+ Sales!B2 Sales!B3)
+```
+
+That is the whole of it when the sheet's name is one word. A name with a space
+in it, or a bracket, or anything else the Guile reader stops at, cannot be
+written that way. Write the reference as the symbol it is:
+
+```scheme
+#{Q1 2026!B2}#
+```
+
+`#{…}#` is Guile's own syntax for a symbol with awkward characters in it, so
+the reference stays an ordinary variable and reads back as one. The friendlier
+spelling for the same cell puts the sheet in a string and the cell in a symbol,
+which works for every name:
+
+```scheme
+(cell "Q1 2026" 'B2)
+(sum (range "Q1 2026" 'B2 'B9))
+```
+
+A reference to another sheet follows the cell it names, exactly as one to this
+sheet does. Move a row on Sales and every `Sales!B2` in the workbook moves with
+it, wherever it is written. Rename Sales and every reference to it is rewritten,
+into `#{…}#` form if the new name needs it. Delete a sheet and the cells that
+named it show `#ERR` and say which sheet has gone.
+
+A cycle can go round several sheets now, and is still caught. The message names
+the sheet of each cell in it: `Summary!C1 -> Sales!C1 -> Summary!C1`.
+
+There is one limit. A cross-sheet reference has to be written out to be found.
+`(cell some-name 'B2)`, where `some-name` is worked out as the cell runs, reads
+the right cell, but nothing rewrites it when the sheet it names is rearranged.
+That is the same bargain `(range 'A1 'B10)` has always made, and the reason a
+reference is a quoted symbol and a sheet name is a string: the rewriting has to
+tell the two apart on sight.
 
 ## Keyboard
 
@@ -630,15 +685,19 @@ byte at a time — the worst a pipe can do — the store's whole folder format
 including the format-1 migration, and then the client driving a real Guile
 kernel over a real pipe. That last one is the test the port turns on: two
 languages agreeing about a wire format, with a cell whose text is full of the
-quotes, backslashes and parentheses the messages are themselves made of.
+quotes, backslashes and parentheses the messages are themselves made of. The
+same run opens two sheets, has one read the other across the wire, and watches
+an edit to one come back as an answer about both.
 
 `make check-kernel` runs the Guile end: the model, and the same protocol from
 the other side — sheets opening at the
-size they were given, an edit recomputing what depends on it, the source echoed
+size they were given, one sheet reading another in all three spellings, an edit recomputing what depends on it, the source echoed
 back as the model kept it, an error rendered and flagged, a colour surviving the
 trip, a preview evaluated without being kept, a move reporting the sources it
-rewrote with the subtotal unchanged, and every way of asking for something
-impossible refused without the kernel falling over. The client's own side of
+rewrote with the subtotal unchanged, a move and a rename rewriting the
+references on the sheets that were only watching, a cycle that goes round two
+sheets naming both of them, and every way of asking for something impossible
+refused without the kernel falling over. The client's own side of
 that is in the Haskell suite, including the part that matters: a cell that will
 not finish, fifty pumps over it that all return, and a restart that abandons
 what was outstanding and comes back knowing nothing.

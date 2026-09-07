@@ -34,10 +34,12 @@
             kernel-serve
             run-kernel))
 
-;; The kernel is a table of sheets by whatever the shell chose to call them.
-;; The name is opaque here: the shell has tabs that get renamed and reordered,
-;; and none of that is any of the kernel's business.
-(define (make-kernel) (make-hash-table))
+;; The kernel is a book: the sheets the shell has open, by the names on their
+;; tabs.  It knows the names because cells use them -- a cell that says
+;; Summary!B2 is asking for a sheet by name, and something has to know which
+;; one that is.  Nothing else about a tab is any of its business, and a rename
+;; is a request like any other.
+(define (make-kernel) (make-book))
 
 
 ;;;
@@ -73,15 +75,29 @@ here would take the window's answers away with it."
      ;; Exactly the size asked for, and no opinion about what a reasonable size
      ;; would be.  How much empty room a new sheet gets is a question about what
      ;; looks right in a window, and the window is not here.
-     (let ((s (make-sheet (max 1 rows) (max 1 columns))))
+     (let ((s (open-sheet! kernel (sheet-name-given sheet)
+                           (max 1 rows) (max 1 columns))))
        (alist->sheet! s cells)
        (grow-sheet! s rows columns)
-       (hash-set! kernel sheet s)
-       (reply id (snapshot-of sheet s))))
+       (reply id (with-others kernel s (snapshot-of s) #f))))
 
     (('close sheet)
-     (hash-remove! kernel sheet)
-     (reply id '()))
+     (close-sheet! kernel sheet)
+     ;; The sheets that are left may have been reading the one that has gone,
+     ;; so they go back as well.
+     (reply id (with-others kernel #f '() #f)))
+
+    ;; A tab has been renamed.  The cells have not moved, but every reference
+    ;; that named the sheet has, so the sources of every sheet go back with the
+    ;; answer -- the shell has files to bring into line.
+    (('rename from to)
+     (let ((s (sheet-called kernel from))
+           (wanted (sheet-name-given to)))
+       (when (and (not (equal? from wanted)) (book-sheet kernel wanted))
+         (throw 'cellar-kernel-error
+                (format #f "a sheet called ~s is already open" wanted)))
+       (rename-sheet! kernel from wanted)
+       (reply id (with-others kernel s (with-sources s) #t))))
 
     (('set-cell sheet name source)
      (let* ((s (sheet-called kernel sheet))
@@ -91,8 +107,10 @@ here would take the window's answers away with it."
        ;; #f for a cell that has been emptied.  The shell writes files, and
        ;; what it writes should be what is true here rather than its own guess
        ;; at what trimming means.
-       (reply id (cons (cons 'source (cell-source s r))
-                       (snapshot-of sheet s)))))
+       (reply id (with-others kernel s
+                              (cons (cons 'source (cell-source s r))
+                                    (snapshot-of s))
+                              #f))))
 
     (('preview sheet name source)
      ;; The editor's live result, which is evaluated without being kept.
@@ -115,16 +133,18 @@ here would take the window's answers away with it."
                                      (else (format-value value))))
                    (error . ,(and (cell-error? value) #t))))))
 
-    ;; Moving and inserting rewrite the references inside other cells, so the
-    ;; sources go back with the snapshot: the shell has files to bring into
-    ;; line and its copy of the text is now stale.
+    ;; Moving and inserting rewrite the references inside other cells -- on
+    ;; other sheets too, since a reference to a moved row is a reference to it
+    ;; wherever it is written -- so the sources go back with the snapshot: the
+    ;; shell has files to bring into line and its copy of the text is now
+    ;; stale.
     (('move sheet axis from to)
      (let ((s (sheet-called kernel sheet)))
        (unless (if (eq? axis 'row)
                    (move-row! s from to)
                    (move-column! s from to))
          (throw 'cellar-kernel-error "that line is already at the edge"))
-       (reply id (with-sources sheet s))))
+       (reply id (with-others kernel s (with-sources s) #t))))
 
     (('insert sheet axis at)
      (let ((s (sheet-called kernel sheet)))
@@ -132,27 +152,33 @@ here would take the window's answers away with it."
                    (insert-row! s at)
                    (insert-column! s at))
          (throw 'cellar-kernel-error "there is no room to insert there"))
-       (reply id (with-sources sheet s))))
+       (reply id (with-others kernel s (with-sources s) #t))))
 
     (('recalculate sheet)
      (let ((s (sheet-called kernel sheet)))
        (invalidate-sheet! s)
-       (reply id (snapshot-of sheet s))))
+       (reply id (with-others kernel s (snapshot-of s) #f))))
 
     (('snapshot sheet)
-     (reply id (snapshot-of sheet (sheet-called kernel sheet))))
+     (reply id (snapshot-of (sheet-called kernel sheet))))
 
     (('sources sheet)
      (let ((s (sheet-called kernel sheet)))
-       (reply id `((sheet . ,sheet) (sources . ,(sheet->alist s))))))
+       (reply id `((sheet . ,(sheet-name s)) (sources . ,(sheet->alist s))))))
 
     (_ (throw 'cellar-kernel-error (format #f "no such request: ~a" op)))))
 
 (define (reply id payload) (list 'reply id payload))
 
 (define (sheet-called kernel sheet)
-  (or (hash-ref kernel sheet #f)
+  (or (book-sheet kernel sheet)
       (throw 'cellar-kernel-error (format #f "no sheet called ~s is open" sheet))))
+
+(define (sheet-name-given name)
+  (if (string? name)
+      name
+      (throw 'cellar-kernel-error
+             (format #f "a sheet is named with a string, not ~s" name))))
 
 (define (reference name)
   (or (name->ref name)
@@ -163,20 +189,42 @@ here would take the window's answers away with it."
 ;;; What a sheet looks like from the other side
 ;;;
 
-(define (snapshot-of sheet s)
+(define (snapshot-of s)
   "A sheet as the shell needs it: how big it is, and every cell that has
 anything to show, already rendered.
 
 Rendered, not raw.  The shell draws strings and paints backgrounds; it has no
 evaluator and wants none, so what crosses the wire is what goes on the screen.
 That is also what makes the grid's paint path free of any talking at all."
-  `((sheet . ,sheet)
+  `((sheet . ,(sheet-name s))
     (rows . ,(sheet-rows s))
     (columns . ,(sheet-columns s))
     (cells . ,(rendered-cells s))))
 
-(define (with-sources sheet s)
-  (append (snapshot-of sheet s) `((sources . ,(sheet->alist s)))))
+(define (with-sources s)
+  (append (snapshot-of s) `((sources . ,(sheet->alist s)))))
+
+(define (with-others kernel s payload sources?)
+  "PAYLOAD, followed by every other sheet in the book.
+
+Sheets name each other, so an edit to one is an answer about all of them: a
+number on Summary changes the moment the cell it reads changes, and the shell
+has no evaluator to work that out for itself.  Whether the others carry their
+sources as well depends on whether anything rewrote them -- a move does, an
+edit does not.
+
+The whole book on every edit is more than the one sheet that was asked about,
+and it is what the shell would otherwise have to ask for.  A dependency graph
+would send less; a book is a handful of sheets of a few hundred cells, so it
+would also be a great deal of machinery to save a message nobody is waiting
+on."
+  (append payload
+          `((others . ,(map (lambda (other)
+                              (if sources? (with-sources other)
+                                  (snapshot-of other)))
+                            (filter (lambda (other) (not (eq? other s)))
+                                    (map (lambda (name) (book-sheet kernel name))
+                                         (book-sheet-names kernel))))))))
 
 (define (rendered-cells s)
   "Every cell that holds something, as

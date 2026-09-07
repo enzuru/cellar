@@ -77,11 +77,10 @@ loadTab app tab = do
         Right sheet -> do
           writeIORef (tabSources tab) (sheetCells sheet)
           gridSetColumnWidths (tabGrid tab) (sheetWidths sheet)
-          ask app "open"
-            [ Num (fromIntegral (tabId tab))
+          askSheet app tab "open"
             -- A sheet is at least the ordinary size on screen, even when it
             -- was saved smaller.
-            , Num (fromIntegral (max defaultRows (sheetRows sheet)))
+            [ Num (fromIntegral (max defaultRows (sheetRows sheet)))
             , Num (fromIntegral (max defaultColumns (sheetColumns sheet)))
             , sourcesSexp (sheetCells sheet) ]
             (\payload -> do
@@ -97,14 +96,16 @@ closeAllTabs app = do
   tabs <- readIORef (appTabs app)
   writeIORef (appTabs app) []
   forM_ tabs $ \tab -> do
-    ask app "close" [Num (fromIntegral (tabId tab))] (const (pure ()))
+    askSheet app tab "close" [] (const (pure ()))
     Adw.tabViewClosePage (appTabView app) (tabPage tab)
 
 
 forgetTab :: App -> Tab -> IO ()
 forgetTab app tab = do
   modifyIORef' (appTabs app) (filter (\other -> tabId other /= tabId tab))
-  ask app "close" [Num (fromIntegral (tabId tab))] (const (pure ()))
+  -- The sheets that are left may have been naming this one; the kernel says
+  -- what they come to now that they cannot, and the tabs catch up.
+  askSheet app tab "close" [] (takeOthers app)
 
 -- | Make a tab for every sheet in the workbook and select one.
 
@@ -136,24 +137,6 @@ buildTabs app showing = do
 
 
 
-persistLayout :: App -> Tab -> IO ()
-persistLayout app tab = do
-  directory <- tabDirectory app tab
-  forM_ directory $ \path -> do
-    view <- gridCurrentView (tabGrid tab)
-    widths <- gridColumnWidths (tabGrid tab)
-    sources <- readIORef (tabSources tab)
-    reportFailure app "save the sheet" $
-      saveSheet path (Sheet sources (viewRows view) (viewColumns view) widths)
-
--- | Write every cell of one sheet.  Moving a row or inserting a column renames
--- the files of every cell it shifted, so the cheapest correct answer for those
--- is to write the lot -- it is a few dozen small files, and it deletes the ones
--- left behind.
-
-persistCells :: App -> Tab -> IO ()
-persistCells = persistLayout
-
 -- | Run something that touches the disk, and put a toast up if it fails.
 --
 -- A 'StoreError' carries a sentence written for a person to read, so that is
@@ -165,16 +148,17 @@ onGridCommand :: App -> Tab -> Command -> IO ()
 onGridCommand app tab command = case command of
   Layout -> persistLayout app tab
   Clear r -> setCell app tab r ""
+  -- A move or an insert rewrites cell sources, here and on any sheet that
+  -- names this one; the snapshot carries them and writing them out is part of
+  -- taking it, so there is nothing to do afterwards.
   Move axis from to ->
-    ask app "move"
-      [ Num (fromIntegral (tabId tab)), Sym (axisName axis)
-      , Num (fromIntegral from), Num (fromIntegral to) ]
-      (\payload -> takeSnapshot app tab payload >> persistCells app tab)
+    askSheet app tab "move"
+      [ Sym (axisName axis), Num (fromIntegral from), Num (fromIntegral to) ]
+      (takeSnapshot app tab)
   Insert axis at ->
-    ask app "insert"
-      [ Num (fromIntegral (tabId tab)), Sym (axisName axis)
-      , Num (fromIntegral at) ]
-      (\payload -> takeSnapshot app tab payload >> persistCells app tab)
+    askSheet app tab "insert"
+      [ Sym (axisName axis), Num (fromIntegral at) ]
+      (takeSnapshot app tab)
 
 rewatch :: App -> IO ()
 rewatch app = do
@@ -250,8 +234,8 @@ reloadTab app tab = do
                           (fromMaybe 0 (lookupKey "columns" metadata >>= asInt))
           active <- gridActiveRef (tabGrid tab)
           writeIORef (tabSources tab) onDisk
-          ask app "open"
-            [ Num (fromIntegral (tabId tab)), Num (fromIntegral rows)
+          askSheet app tab "open"
+            [ Num (fromIntegral rows)
             , Num (fromIntegral columns), sourcesSexp onDisk ]
             (\payload -> do
                takeSnapshot app tab payload
@@ -392,6 +376,11 @@ renameSheet app tab name = do
         writeIORef (appWorkbook app) (Just moved)
         writeIORef (tabName tab) renamed
         Adw.tabPageSetTitle (tabPage tab) (T.pack renamed)
+        -- Cells elsewhere say Summary!B2, so a sheet that changes its name
+        -- changes what every one of them has to say.  The kernel rewrites
+        -- them and hands back the sources of every sheet it touched, which
+        -- taking the snapshot writes to disk.
+        ask app "rename" [Str old, Str renamed] (takeSnapshot app tab)
         rewatch app
         retitle app
 

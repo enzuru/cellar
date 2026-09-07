@@ -423,6 +423,7 @@ runKernelTests failures = do
     Just (program, arguments) -> do
       kernel <- startKernel program arguments
       answers <- newIORef ([] :: [(String, String)])
+      let sheet = "Sheet 1"
       let remember key value = modifyIORef' answers ((key, value) :)
           ask op arguments' key = call kernel op arguments'
             (\payload -> remember key (T.unpack (writeSexp payload)))
@@ -438,45 +439,67 @@ runKernelTests failures = do
       ask "ping" [] "ping"
       expect "the kernel answers a ping" "ping" "()"
 
-      ask "open" [ Num 1, Num 10, Num 5
+      -- A name with a space in it, because that is what a sheet is called
+      -- until somebody renames it, and because it is the name that cannot be
+      -- written in front of a reference without help.
+      ask "open" [ Str sheet, Num 10, Num 5
                  , list [ Pair (Str "A1") (Str "\"Qty\"")
                         , Pair (Str "A2") (Str "7")
                         , Pair (Str "B2") (Str "(* A2 6)") ] ] "open"
       expect "a sheet opens and comes back rendered" "open"
         "(\"B2\" \"42\" #t #f #f #f)"
 
-      ask "set-cell" [Num 1, Str "A2", Str "10"] "set"
+      ask "set-cell" [Str sheet, Str "A2", Str "10"] "set"
       expect "an edit recomputes what depends on it" "set"
         "(\"B2\" \"60\" #t #f #f #f)"
       expect "and the source comes back as the model kept it" "set"
         "(source . \"10\")"
 
-      ask "set-cell" [Num 1, Str "A2", Str "(/ 1 0)"] "bad"
+      -- Sheets naming each other, over the wire and back.
+      ask "open" [ Str "Summary", Num 10, Num 5
+                 , list [ Pair (Str "A1") (Str "(* #{Sheet 1!A2}# 2)") ] ] "other"
+      expect "a cell can read a cell on another sheet" "other"
+        "(\"A1\" \"20\" #t #f #f #f)"
+
+      ask "set-cell" [Str sheet, Str "A2", Str "21"] "spread"
+      expect "and hears about it when that cell changes" "spread"
+        "(\"A1\" \"42\" #t #f #f #f)"
+      expect "which arrives as the rest of the book" "spread" "(others "
+
+      ask "set-cell" [Str sheet, Str "C1", Str "(+ Summary!A1 1)"] "back"
+      expect "a plain sheet name needs no help" "back"
+        "(\"C1\" \"43\" #t #f #f #f)"
+
+      ask "rename" [Str "Summary", Str "Totals"] "rename"
+      expect "renaming a sheet rewrites what names it" "rename"
+        "(\"C1\" . \"(+ Totals!A1 1)\")"
+
+      ask "set-cell" [Str sheet, Str "A2", Str "(/ 1 0)"] "bad"
       expect "an error is rendered and carries its message" "bad" "\"#ERR\""
 
       -- The case the whole wire format has to survive: a cell whose text is
       -- full of the punctuation the messages are made of.
       let awkward = "(string-append \"a )\" \"and a \\\" and a \\\\\")"
-      ask "set-cell" [Num 1, Str "A3", Str awkward] "awkward"
+      ask "set-cell" [Str sheet, Str "A3", Str awkward] "awkward"
       expect "a cell full of quotes and parens survives the trip" "awkward"
         "a )and a \\\" and a \\\\"
 
-      ask "preview" [Num 1, Str "A4", Str "(* 3 3)"] "preview"
+      ask "preview" [Str sheet, Str "A4", Str "(* 3 3)"] "preview"
       expect "a preview is evaluated without being kept" "preview"
         "(display . \"9\")"
 
-      ask "snapshot" [Num 99] "missing"
+      ask "snapshot" [Str "nowhere"] "missing"
       expect "a sheet that is not open is refused" "missing"
-        "FAILED no sheet called 99 is open"
+        "FAILED no sheet called \"nowhere\" is open"
 
-      ask "move" [Num 1, Sym "row", Num 0, Num 1] "move"
+      ask "move" [Str sheet, Sym "row", Num 0, Num 1] "move"
       expect "a move reports the sources it rewrote" "move" "(sources"
 
       before <- outstanding kernel
       check failures "nothing is left outstanding" 0 before
 
       -- The reason the kernel is its own process.
-      ask "set-cell" [Num 1, Str "A5", Str "(let loop () (loop))"] "runaway"
+      ask "set-cell" [Str sheet, Str "A5", Str "(let loop () (loop))"] "runaway"
       threadDelay 1500000
       _ <- pump kernel
       spinning <- outstanding kernel
