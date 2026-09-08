@@ -19,7 +19,7 @@ WARNINGS := -Wall -Wcompat -Wincomplete-record-updates \
 BUILD := .build
 SHELL_BIN := $(BUILD)/cellar
 
-.PHONY: all ui build run check check-shell check-kernel coverage smoke clean
+.PHONY: all ui build run check check-shell check-kernel check-window coverage smoke clean
 
 all: ui build
 
@@ -54,6 +54,26 @@ check-kernel:
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/ref-test.scm
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/model-test.scm
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/kernel-test.scm
+
+# The window, driven from code under a nested X server.
+#
+# Not part of `make check`, which needs neither the GTK bindings nor a display.
+# This is the companion to the smoke scripts rather than a replacement for
+# them: it calls what a signal handler would have called and asks the widgets
+# what they say afterwards, so it needs no xdotool, no coordinates and no
+# screenshots, while they keep the half of the story only a real keystroke can
+# tell.
+WINDOW_BIN := $(BUILD)/cellar-window-test
+
+check-window: ui $(WINDOW_BIN)
+	nix shell nixpkgs#xvfb-run nixpkgs#dbus \
+	  -c xvfb-run -s "-screen 0 1280x820x24" \
+	  dbus-run-session -- ./$(WINDOW_BIN)
+
+$(WINDOW_BIN): $(HASKELL) test/Window.hs
+	@mkdir -p $(BUILD)
+	ghc -ihs -itest -outputdir $(BUILD)/window-objects -o $@ \
+	  test/Window.hs -threaded $(WARNINGS)
 
 # What the tests reach, and what they do not.
 #

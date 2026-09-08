@@ -4,8 +4,9 @@
 
 -- | The application: what starts, what it is called, and what the keys do.
 --
-module Cellar.App (runApp) where
+module Cellar.App (runApp, withWindow) where
 
+import Control.Exception (finally)
 import Control.Monad (forM_, unless, void, when)
 import Data.IORef
 import Data.Maybe (fromMaybe)
@@ -44,6 +45,21 @@ runApp arguments = do
 
 activate :: Adw.Application -> Maybe FilePath -> IO ()
 activate application file = do
+  app <- buildWindow application
+  -- A workbook named on the command line opens straight away; without one the
+  -- start page asks what to open, since a sheet has to live somewhere.
+  forM_ file $ \path -> do
+    opened <- openWorkbook app path
+    unless opened (showStartPage app)
+
+-- | Build the window and everything behind it, and put it on screen.
+--
+-- Split out of 'activate' so that it has two callers: the application, which
+-- presents the window and lets somebody use it, and the window tests, which
+-- drive the same window from code.  A test that built a window of its own
+-- would be testing its own construction rather than Cellar's.
+buildWindow :: Adw.Application -> IO App
+buildWindow application = do
   -- GtkSourceView registers its types here; without this the builder cannot
   -- instantiate the source view in editor.ui.
   Source.init
@@ -103,12 +119,29 @@ activate application file = do
 
   Gtk.applicationAddWindow application window
   Gtk.windowPresent window
+  pure app
 
-  -- A workbook named on the command line opens straight away; without one the
-  -- start page asks what to open, since a sheet has to live somewhere.
-  forM_ file $ \path -> do
-    opened <- openWorkbook app path
-    unless opened (showStartPage app)
+-- | Build the window, hand it to something, and take it down again.
+--
+-- This is 'runApp' with the person replaced by a program: the same window,
+-- built out of the same .ui file with the same kernel behind it, driven from
+-- code instead of from a mouse.  The application is deliberately not unique,
+-- so that a test does not hand its work to the Cellar you already have open.
+--
+-- The body runs inside the activate handler, which is to say inside the main
+-- loop but not while it is spinning; anything waiting on an answer from the
+-- kernel has to turn the loop over itself.
+withWindow :: (App -> IO ()) -> IO ()
+withWindow body = do
+  application <- new Adw.Application
+    [ #applicationId := applicationId
+    , #flags := [Gio.ApplicationFlagsNonUnique] ]
+  _ <- on application #activate $ do
+    app <- buildWindow application
+    body app `finally` do
+      stopKernel (appKernel app)
+      Gio.applicationQuit application
+  void (Gio.applicationRun application (Just ["cellar-window-test"]))
 
 -- Talking to the kernel
 
