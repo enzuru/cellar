@@ -54,6 +54,14 @@ main = do
     (Ref 3 1) (refAfterInsert (Ref 2 1) Row 2)
   check failures "and leaves what is above alone"
     (Ref 1 1) (refAfterInsert (Ref 1 1) Row 2)
+  -- A move and the move back are one permutation and its inverse, so together
+  -- they are nothing at all.  The twin of this case is in tests/ref-test.scm,
+  -- which checks the Guile copy of the same arithmetic: two implementations of
+  -- one rule is two chances to be wrong, and they disagree quietly.
+  check failures "a move and the move back leave every index where it started"
+    [] [ (i, from, to)
+       | i <- [0 .. 5], from <- [0 .. 5], to <- [0 .. 5]
+       , shiftIndex (shiftIndex i from to) to from /= i ]
 
   section "s-expressions"
   let roundTrip s = parseSexp (writeSexp s)
@@ -80,6 +88,43 @@ main = do
     (either (const True) (const False) (parseSexp (T.pack "\"never ends")))
   check failures "and so is a stray close paren" True
     (either (const True) (const False) (parseSexp (T.pack ")")))
+  -- The rest of the ways a message can be malformed.  The reader is written to
+  -- fail loudly rather than to be generous, and what it says when it fails is
+  -- what somebody reads when the two halves disagree about the wire format, so
+  -- the message is checked and not merely the refusal.
+  let refused wanted = either (isInfixOf wanted) (const False)
+  check failures "a hex escape with no semicolon says so" True
+    (refused "semicolon" (parseSexp (T.pack "\"\\x41\"")))
+  check failures "a string ending in a backslash says so" True
+    (refused "backslash" (parseSexp (T.pack "\"a\\")))
+  check failures "a dotted pair with two things after the dot" True
+    (refused "dotted pair" (parseSexp (T.pack "(a . b c)")))
+  check failures "a second datum after the first" True
+    (refused "trailing text" (parseSexp (T.pack "1 2")))
+  check failures "a # syntax it has never heard of" True
+    (refused "# syntax" (parseSexp (T.pack "#z")))
+  check failures "and a message that stops in the middle" True
+    (refused "stopped in the middle" (parseSexp (T.pack "")))
+  -- Escapes Guile writes that nothing else in the suite happens to send.
+  check failures "the awkward escapes"
+    (Right (Str "\b\v\f\0")) (parseSexp (T.pack "\"\\b\\v\\f\\0\""))
+  check failures "an escape it does not know keeps the character"
+    (Right (Str "q")) (parseSexp (T.pack "\"\\q\""))
+  check failures "a backslash before a newline joins the lines"
+    (Right (Str "ab")) (parseSexp (T.pack "\"a\\\n   b\""))
+  check failures "a fraction is read as one"
+    (Right (Real 1.5)) (parseSexp (T.pack "1.5"))
+  check failures "and written back the same way"
+    (Right (Real 1.5)) (parseSexp (writeSexp (Real 1.5)))
+  check failures "a fraction truncates where a whole number is wanted"
+    (Just 2) (either (const Nothing) asInt (parseSexp (T.pack "2.9")))
+  check failures "a symbol comes out as its name" (Just "sheet") (asSymbol (Sym "sheet"))
+  check failures "and a string does not" Nothing (asSymbol (Str "sheet"))
+  -- Scheme's notion of truth, which the kernel's replies are written in.
+  check failures "only #f is false" False (asBool (Bool False))
+  check failures "a number is true" True (asBool (Num 0))
+  check failures "a dotted list is not a list" Nothing
+    (toList (Pair (Sym "a") (Sym "b")))
 
   section "protocol framing"
   let messages =
@@ -292,6 +337,49 @@ main = do
      check failures "and a folder that is not one is not found"
        Nothing (workbookRoot <$> nothing)
 
+  do let path = inRoot "watched.cellar"
+     createWorkbook path "Summary"
+     book <- open path
+     (book', _) <- addWorkbookSheet book "Q1"
+     let summary = workbookSheetDirectory book' "Summary"
+     -- One cell at a time is how an edit reaches the disk; the whole-sheet
+     -- write above is only for a workbook being copied.
+     saveCell summary "A1" (Just "(* 6 7)")
+     written <- readSheetCells summary
+     check failures "a cell written on its own is on disk"
+       (Just "(* 6 7)") (lookup "A1" written)
+     saveCell summary "A1" (Just "   ")
+     blanked <- doesFileExist (cellFilePath summary "A1")
+     check failures "a cell cleared to whitespace takes its file with it" False blanked
+     saveCell summary "A2" Nothing
+     never <- doesFileExist (cellFilePath summary "A2")
+     check failures "and so does one cleared outright" False never
+
+     setWorkbookActive book' "Q1"
+     active <- workbookActiveSheet book'
+     order <- workbookSheetNames book'
+     check failures "the sheet showing is written down" (Just "Q1") active
+     check failures "and the order is left as it was" ["Summary", "Q1"] order
+
+     -- What the watcher is pointed at.  A workbook changed by a commit or a
+     -- text editor is noticed through these and nothing else.
+     watched <- workbookWatchPaths book'
+     check failures "the watch covers the index"
+       True ((path </> "workbook.scm") `elem` watched)
+     check failures "the folder the sheets are under"
+       True ((path </> "sheets") `elem` watched)
+     check failures "each sheet's own folder"
+       True ((path </> "sheets" </> "Q1") `elem` watched)
+     check failures "the cells inside it"
+       True ((path </> "sheets" </> "Q1" </> "cells") `elem` watched)
+     check failures "and the primary file that says how big it is"
+       True ((path </> "sheets" </> "Q1" </> "sheet.scm") `elem` watched)
+
+  check failures "a workbook folder is named .cellar"
+    "budget.cellar" (workbookFolderName "budget")
+  check failures "and one that says so already is left alone"
+    "budget.cellar" (workbookFolderName "budget.cellar")
+
   section "the external editor"
   do let path = inRoot "editing.cellar"
      createSheetDirectory path
@@ -363,6 +451,18 @@ main = do
      check failures "and the list stops where it was told to"
        recentLimit
        (length (foldr rememberRecent [] [ show n | n <- [1 .. 30 :: Int] ]))
+     -- How one is written down for a person to read.  Both of these are on the
+     -- start page and in the menu, and neither needs a window to answer.
+     check failures "a folder under the home directory is written with a tilde"
+       "~/books" (abbreviate (Just "/home/someone") "/home/someone/books")
+     check failures "one outside it is written in full"
+       "/srv/books" (abbreviate (Just "/home/someone") "/srv/books")
+     check failures "and so is any of them when there is no home to speak of"
+       "/home/someone/books" (abbreviate Nothing "/home/someone/books")
+     check failures "an underscore in a menu label is doubled, not a mnemonic"
+       "sales__2026.cellar" (menuLabel "/home/someone/sales_2026.cellar")
+     check failures "and a label is the folder, not the path to it"
+       "budget.cellar" (menuLabel "/home/someone/books/budget.cellar")
      unsetEnv "CELLAR_CONFIG"
 
   section "the kernel, over a real pipe"
@@ -513,6 +613,37 @@ runKernelTests failures = do
 
       before <- outstanding kernel
       check failures "nothing is left outstanding" 0 before
+
+      -- The stall watchdog, which decides when Cellar offers to interrupt a
+      -- cell.  Nothing is pumped between here and the end of the block: a
+      -- reply the main loop has not handed out yet leaves the request
+      -- outstanding, which is exactly the state being timed, and it makes the
+      -- timing of the test its own rather than the kernel's.
+      ask "ping" [] "older"
+      threadDelay 300000
+      ask "ping" [] "newer"
+      waiting <- outstanding kernel
+      oldestOp <- waitingOp kernel
+      check failures "two requests wait, and the older one is the one timed"
+        (2, Just "ping") (waiting, oldestOp)
+      waited <- waitingFor kernel
+      check failures "which has been waiting as long as it was left"
+        True (maybe False (>= 0.3) waited)
+      check failures "long enough to count as stalled" True =<< stalled kernel 0.2
+      -- A kernel that is still starting has been slow for reasons that have
+      -- nothing to do with the cell it was handed, so the first answer of any
+      -- kind restarts the clock rather than the request being reported.
+      markReady kernel
+      afterReady <- waitingFor kernel
+      check failures "marking the kernel ready starts the clock again"
+        True (maybe False (< 0.3) afterReady)
+      check failures "so nothing is stalled any more" False =<< stalled kernel 0.2
+      _ <- settle "older"
+      _ <- settle "newer"
+      cleared <- outstanding kernel
+      idle <- waitingOp kernel
+      check failures "and both answers clear both requests" 0 cleared
+      check failures "leaving nothing waiting to be named" Nothing idle
 
       -- The reason the kernel is its own process.
       ask "set-cell" [Str sheet, Str "A5", Str "(let loop () (loop))"] "runaway"

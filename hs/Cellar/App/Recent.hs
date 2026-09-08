@@ -25,7 +25,6 @@ module Cellar.App.Recent
 import Control.Exception (SomeException, try)
 import Control.Monad (filterM, forM_, unless, void, when)
 import Data.IORef
-import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import System.Directory (canonicalizePath)
 import System.Environment (lookupEnv)
@@ -129,17 +128,6 @@ emptyList listBox = do
     Gtk.listBoxRemove listBox c
     emptyList listBox
 
--- | A folder as it reads to somebody who lives in it.
-abbreviate :: Maybe FilePath -> FilePath -> String
-abbreviate home path = fromMaybe path $ do
-  root <- home
-  rest <- stripLeading root path
-  pure ('~' : rest)
-  where
-    stripLeading prefix full = case splitAt (length prefix) full of
-      (start, rest) | start == prefix -> Just rest
-      _ -> Nothing
-
 -- The menu
 
 fillMenu :: App -> [FilePath] -> IO ()
@@ -157,9 +145,3 @@ fillMenu app paths = do
     Gio.menuAppend forgetting (Just "_Clear Recent Workbooks") (Just "app.clear-recent")
     Gio.menuAppendSection inner (Nothing :: Maybe T.Text) forgetting
     Gio.menuAppendSubmenu section (Just "Open _Recent") inner
-
--- | The folder's name as a menu label.  An underscore in a label is a
--- mnemonic, so a workbook called @sales_2026@ would show as @sales2026@ with a
--- letter underlined; doubling them is how one is spelled literally.
-menuLabel :: FilePath -> String
-menuLabel = concatMap (\c -> if c == '_' then "__" else [c]) . takeFileName

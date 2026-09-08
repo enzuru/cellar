@@ -19,7 +19,7 @@ WARNINGS := -Wall -Wcompat -Wincomplete-record-updates \
 BUILD := .build
 SHELL_BIN := $(BUILD)/cellar
 
-.PHONY: all ui build run check check-shell check-kernel smoke clean
+.PHONY: all ui build run check check-shell check-kernel coverage smoke clean
 
 all: ui build
 
@@ -48,10 +48,49 @@ check-shell:
 	  test/Spec.hs -threaded $(WARNINGS)
 	GUILE_AUTO_COMPILE=0 ./$(BUILD)/cellar-test
 
-# The kernel: the model it holds, and the protocol it answers on.
+# The Guile half: the reference arithmetic it shares with the shell, the model
+# it holds, and the protocol it answers on.
 check-kernel:
+	GUILE_AUTO_COMPILE=0 guile -L src -s tests/ref-test.scm
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/model-test.scm
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/kernel-test.scm
+
+# What the tests reach, and what they do not.
+#
+# A build of its own, instrumented with GHC's coverage counters, so that `make
+# check` stays the fast gate.  Every module under hs/ is named on the command
+# line rather than only the ones the suite imports: a module that is never
+# imported is otherwise left out of the report altogether, and a figure that
+# quietly omits the window would say four fifths of a program that is mostly
+# untested.  Named that way they are linked in and reported at 0%, which is the
+# truth.  hs/Main.hs is the exception -- it is a `Main` module, and the test
+# suite is the `Main` of this binary.
+#
+# The report excludes the suite itself, since how much of the test file ran
+# says nothing about the program.
+COVERAGE := $(BUILD)/coverage
+INSTRUMENTED := $(filter-out hs/Main.hs,$(HASKELL))
+
+coverage:
+	@mkdir -p $(COVERAGE)
+	ghc -ihs -itest -fhpc -hpcdir $(COVERAGE)/mix \
+	  -outputdir $(COVERAGE)/objects -o $(COVERAGE)/cellar-test \
+	  test/Spec.hs $(INSTRUMENTED) -threaded $(WARNINGS)
+	@# The counts from the last run were taken against the last build, and
+	@# hpc refuses to mix the two.
+	@rm -f $(COVERAGE)/cellar-test.tix
+	GUILE_AUTO_COMPILE=0 HPCTIXFILE=$(COVERAGE)/cellar-test.tix \
+	  ./$(COVERAGE)/cellar-test
+	@echo
+	@echo "the shell as a whole, the test suite itself left out:"
+	@hpc report $(COVERAGE)/cellar-test.tix --hpcdir=$(COVERAGE)/mix \
+	  --exclude=Main | sed 's/^/  /'
+	@echo
+	@echo "expressions run, by module:"
+	@hpc report $(COVERAGE)/cellar-test.tix --hpcdir=$(COVERAGE)/mix \
+	  --exclude=Main --per-module \
+	  | awk '/^-----<module/ { name = $$2; sub(/>-----/, "", name) } \
+	         /expressions used/ { printf "  %4s  %s\n", $$1, name }'
 
 # Drives the real UI under a nested X server; needs xvfb-run, imagemagick, xdotool.
 smoke: ui build

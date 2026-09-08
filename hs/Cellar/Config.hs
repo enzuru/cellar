@@ -16,6 +16,8 @@ module Cellar.Config
   , effectiveEditorCommand
   , recentLimit
   , rememberRecent
+  , abbreviate
+  , menuLabel
   , EditorOverride (..)
   , editorOverride
   , splitCommand
@@ -31,7 +33,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import System.Environment (lookupEnv)
 import System.IO (IOMode (..), hSetEncoding, utf8, withFile)
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath ((</>), takeDirectory, takeFileName)
 
 import Cellar.Sexp
 
@@ -65,6 +67,31 @@ recentLimit = 10
 -- A workbook already in the list moves rather than repeats.
 rememberRecent :: FilePath -> [FilePath] -> [FilePath]
 rememberRecent path paths = take recentLimit (path : filter (/= path) paths)
+
+-- | A folder as it reads to somebody who lives in it: the home directory,
+-- when the path is under it, written as @~@.  The home directory is passed in
+-- rather than looked up, which is what makes this answerable without a window
+-- or an environment.
+abbreviate :: Maybe FilePath -> FilePath -> String
+abbreviate home path = fromMaybe path $ do
+  root <- home
+  rest <- stripLeading root path
+  pure ('~' : rest)
+  where
+    stripLeading prefix full = case splitAt (length prefix) full of
+      (start, rest) | start == prefix -> Just rest
+      _ -> Nothing
+
+-- | A workbook's folder as a menu label.  An underscore in a label is a
+-- mnemonic, so a workbook called @sales_2026@ would show as @sales2026@ with a
+-- letter underlined; doubling them is how one is spelled literally.
+--
+-- This and 'abbreviate' are how the recent workbooks are written down for a
+-- person to read.  They live here, beside the list itself, because they are
+-- arithmetic on strings: the module that puts them on screen needs GTK to
+-- compile, and nothing that needs GTK can be tested without a display.
+menuLabel :: FilePath -> String
+menuLabel = concatMap (\c -> if c == '_' then "__" else [c]) . takeFileName
 
 -- | Where the preferences live.  @CELLAR_CONFIG@ overrides it, which is how
 -- the tests get a config file of their own.
