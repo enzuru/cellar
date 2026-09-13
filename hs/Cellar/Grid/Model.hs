@@ -40,6 +40,7 @@ module Cellar.Grid.Model
   , selectLine
   , moveLine
   , insertLine
+  , moveItem
   , scrollTo
   , positionOfColumn
     -- * What is on screen

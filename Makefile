@@ -38,7 +38,8 @@ WARNINGS := -Wall -Wcompat -Wincomplete-record-updates \
 BUILD := .build
 SHELL_BIN := $(BUILD)/cellar
 
-.PHONY: all ui build run check check-shell check-kernel check-window coverage smoke clean
+.PHONY: all ui build run check check-shell check-properties check-kernel \
+        check-window coverage smoke clean
 
 all: ui build
 
@@ -57,7 +58,7 @@ run: ui build
 	./$(SHELL_BIN) $(FILE)
 
 # Every one of these runs without a display.
-check: check-shell check-window check-kernel
+check: check-shell check-properties check-window check-kernel
 
 # The shell: references, s-expressions, framing, the store, views, the
 # preferences, and the client driving a real Guile kernel over a real pipe.
@@ -66,6 +67,25 @@ check-shell:
 	ghc $(INCLUDES) -itest -outputdir $(BUILD)/test-objects -o $(BUILD)/cellar-test \
 	  test/Spec.hs -threaded $(WARNINGS)
 	GUILE_AUTO_COMPILE=0 ./$(BUILD)/cellar-test
+
+# The laws, against generated input.
+#
+# Separate from check-shell because it is a different kind of test and reads as
+# one: that suite says what the rules are, an example each, and this says they
+# hold.  It is built with the library on the search path because one of the
+# laws is about the grid, and it starts Guile because the law worth most is
+# that the reference arithmetic written here and the copy in src/cellar/ref.scm
+# agree.  It runs from the top of the repository, which is how `guile -L src'
+# finds that copy.
+PROPERTIES_BIN := $(BUILD)/cellar-properties
+
+check-properties: $(PROPERTIES_BIN)
+	GUILE_AUTO_COMPILE=0 ./$(PROPERTIES_BIN)
+
+$(PROPERTIES_BIN): $(SOURCES) test/Properties.hs
+	@mkdir -p $(BUILD)
+	ghc $(INCLUDES) -itest -outputdir $(BUILD)/properties-objects -o $@ \
+	  test/Properties.hs -threaded $(WARNINGS)
 
 # The Guile half: the reference arithmetic it shares with the shell, the model
 # it holds, and the protocol it answers on.
@@ -116,6 +136,9 @@ coverage:
 	ghc $(INCLUDES) -itest -fhpc -hpcdir $(COVERAGE)/mix \
 	  -outputdir $(COVERAGE)/window-objects -o $(COVERAGE)/cellar-window-test \
 	  test/Window.hs $(INSTRUMENTED) -threaded $(WARNINGS)
+	ghc $(INCLUDES) -itest -fhpc -hpcdir $(COVERAGE)/mix \
+	  -outputdir $(COVERAGE)/properties-objects -o $(COVERAGE)/cellar-properties \
+	  test/Properties.hs $(INSTRUMENTED) -threaded $(WARNINGS)
 	@# The counts from the last run were taken against the last build, and
 	@# hpc refuses to mix the two.
 	@rm -f $(COVERAGE)/*.tix
@@ -123,11 +146,13 @@ coverage:
 	  ./$(COVERAGE)/cellar-test
 	GUILE_AUTO_COMPILE=0 HPCTIXFILE=$(COVERAGE)/window.tix \
 	  ./$(COVERAGE)/cellar-window-test
-	@# Both suites, counted together.  Each is its own program with a Main
-	@# of its own, which is the one module they cannot share, and which the
-	@# report leaves out anyway.
+	GUILE_AUTO_COMPILE=0 HPCTIXFILE=$(COVERAGE)/properties.tix \
+	  ./$(COVERAGE)/cellar-properties
+	@# All three suites, counted together.  Each is its own program with a
+	@# Main of its own, which is the one module they cannot share, and which
+	@# the report leaves out anyway.
 	@hpc sum --union --exclude=Main --output=$(COVERAGE)/both.tix \
-	  $(COVERAGE)/shell.tix $(COVERAGE)/window.tix
+	  $(COVERAGE)/shell.tix $(COVERAGE)/window.tix $(COVERAGE)/properties.tix
 	@# The declarative library is compiled from source along with Cellar, so
 	@# it is instrumented along with it.  It has a test suite of its own and
 	@# this is not it, so it is left out of both reports.

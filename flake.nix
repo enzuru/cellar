@@ -29,6 +29,9 @@
         haskell-gi-base gi-glib gi-gobject gi-gio gi-gdk4 gi-graphene gi-gtk4
         gi-adwaita
         gi-gtksource5 gi-pango
+        # The test suites.  Most of them are examples and need nothing, but the
+        # laws are written as properties.
+        hedgehog
       ] ++ declarativeDeps ps;
 
       # gi-gtk4-declarative is not published anywhere yet, so the shell
