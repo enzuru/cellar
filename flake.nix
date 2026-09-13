@@ -29,6 +29,24 @@
         haskell-gi-base gi-glib gi-gobject gi-gio gi-gdk4 gi-graphene gi-gtk4
         gi-adwaita
         gi-gtksource5 gi-pango
+      ] ++ declarativeDeps ps;
+
+      # gi-gtk4-declarative is not published anywhere yet, so the shell
+      # compiles it from the checkout next door rather than depending on a
+      # package.  What it needs has to be here, since the compiler call that
+      # builds Cellar is the one that builds it.
+      #
+      # The library's cabal files name gi-gtk and gi-gdk, which are shims over
+      # gi-gtk4 and gi-gdk4 and hold the same types.  They are deliberately
+      # absent here: two exposed packages with a module called GI.Gtk make
+      # every import of it ambiguous, and a direct compiler call names no
+      # packages.  The library's `import qualified GI.Gtk' finds gi-gtk4.
+      declarativeDeps = ps: with ps; [
+        # The library itself.
+        data-default-class mtl unordered-containers vector
+        haskell-gi haskell-gi-overloading
+        # app-simple, whose inputs are pipes Producers.
+        async pipes pipes-concurrency
       ];
     in {
       packages = forAll (pkgs: rec {

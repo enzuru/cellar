@@ -13,7 +13,8 @@ import Control.Exception (SomeException, try)
 import Control.Monad (forM_, unless)
 import qualified Data.ByteString as B
 import Data.IORef
-import Data.List (isInfixOf, sort)
+import Data.List (isInfixOf, nub, sort)
+import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
 import qualified Data.Text as T
 import System.Directory
@@ -21,9 +22,13 @@ import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
 
+import qualified GI.Gdk as Gdk
+
 import Cellar.Client
 import Cellar.Config
+import Cellar.App.State
 import Cellar.External
+import Cellar.Grid.Model
 import Cellar.Protocol
 import Cellar.Ref
 import Cellar.Sexp
@@ -190,6 +195,189 @@ main = do
     (Just "(* 6 7)") (sourceAt view (Ref 1 1))
   check failures "an empty cell shows nothing" "" (displayAt view (Ref 9 9))
   check failures "a reference off the edge is not held" False (viewHolds view (Ref 200 0))
+
+  -- The grid, as a value.  What a key or a click makes of it, what it asks for
+  -- when it does, and what a column carries with it when it moves -- all of it
+  -- without a widget, because the model half of the grid knows nothing about
+  -- one.  What is left needing a display is the drawing, which
+  -- `make check-window' and the smoke scripts cover.
+  section "the grid"
+  let sheet = emptyView 10 4
+      start = newGridModel sheet
+  check failures "a new grid is the size of its view"
+    (10, 4) (modelRows start, length (modelColumns start))
+  check failures "and starts in the corner" (Ref 0 0) (modelActive start)
+  check failures "a view only ever grows it"
+    10 (modelRows (withView (emptyView 4 4) start))
+  check failures "a taller view grows it"
+    20 (modelRows (withView (emptyView 20 4) start))
+
+  let pressKey key model = gridEvent (KeyDown key) model
+  check failures "Down moves the active cell down"
+    (Ref 1 0) (modelActive (fst (pressKey Gdk.KEY_Down start)))
+  check failures "and the top row is as far up as it goes"
+    (Ref 0 0) (modelActive (fst (pressKey Gdk.KEY_Up start)))
+  check failures "End goes to the last column"
+    (Ref 0 3) (modelActive (fst (pressKey Gdk.KEY_End start)))
+  check failures "Delete asks for the active cell to be cleared"
+    [Ask (Clear (Ref 0 0))] (snd (pressKey Gdk.KEY_Delete start))
+  check failures "Enter opens the editor on it"
+    [Open (Ref 0 0)] (snd (pressKey Gdk.KEY_Return start))
+  check failures "a key the grid does not answer changes nothing"
+    [] (snd (pressKey Gdk.KEY_F1 start))
+  check failures "and the grid says which keys it answers"
+    (True, False) (handledKey Gdk.KEY_Down, handledKey Gdk.KEY_F1)
+
+  check failures "a click selects the cell it landed on"
+    (Ref 2 1) (modelActive (fst (gridEvent (Pressed (Ref 2 1) 1) start)))
+  check failures "and asks for nothing"
+    [] (snd (gridEvent (Pressed (Ref 2 1) 1) start))
+  check failures "a second click opens the editor"
+    [Open (Ref 2 1)] (snd (gridEvent (Pressed (Ref 2 1) 2) start))
+  check failures "a click past the edge of the sheet selects nothing"
+    (Ref 0 0) (modelActive (fst (gridEvent (Pressed (Ref 99 1) 1) start)))
+
+  let widened = withWidths [(1, 200)] start
+  check failures "a column width is remembered by position"
+    [(1, 200)] (columnWidths widened)
+  check failures "a column cannot be moved off the sheet"
+    Nothing (fmap snd (moveLine Column 3 9 start))
+  case moveLine Column 1 3 widened of
+    Nothing -> check failures "a column moves" True False
+    Just (moved, command) -> do
+      check failures "moving a column asks for the move"
+        (Move Column 1 3) command
+      -- The point of a column having a name of its own: what was column B is
+      -- column D now, and it is the same column, so it is still that wide.
+      check failures "and its width goes with it" [(3, 200)] (columnWidths moved)
+  case insertLine Column 1 start of
+    Nothing -> check failures "a column is inserted" True False
+    Just (grown, command) -> do
+      check failures "inserting a column asks for the insert"
+        (Insert Column 1) command
+      check failures "and the sheet is one column wider"
+        5 (length (modelColumns grown))
+      -- The new column takes the position; every other column keeps the name
+      -- it had, which is what its width and its widget hang on.
+      check failures "the new column goes in under a name of its own"
+        [0, 4, 1, 2, 3] (modelColumns grown)
+      check failures "and no two columns share a name"
+        5 (length (nub (modelColumns grown)))
+  case insertLine Row 0 (fst (pressKey Gdk.KEY_Down start)) of
+    Nothing -> check failures "a row is inserted" True False
+    Just (grown, _) -> do
+      check failures "inserting a row makes the sheet taller" 11 (modelRows grown)
+      check failures "and carries the active cell down" (Ref 2 0) (modelActive grown)
+
+  -- More of the grid: the parts a person reaches with a right-click, a drag
+  -- or a resize, which the smoke scripts drive through real widgets and which
+  -- are worth pinning down here as well, because here they are arithmetic.
+  section "the grid, further in"
+  check failures "picking a line moves the active cell along it"
+    (Just (Ref 7 0)) (modelActive <$> selectLine Row 7 start)
+  check failures "and along the other one"
+    (Just (Ref 0 2)) (modelActive <$> selectLine Column 2 start)
+  check failures "a line off the sheet is not picked"
+    Nothing (modelActive <$> selectLine Row 99 start)
+  check failures "scrolling asks for a row"
+    (Just 4) (modelScroll (scrollTo 4 start))
+  check failures "a drag is remembered as it is drawn"
+    (Just (Column, 1, 3)) (modelDrag (withDrag (Just (Column, 1, 3)) start))
+  check failures "and forgotten when it ends"
+    Nothing (modelDrag (withDrag Nothing (withDrag (Just (Row, 0, 1)) start)))
+  check failures "a column reports where it is"
+    (Just 2) (positionOfColumn 2 start)
+  check failures "and a column that is not there reports nothing"
+    Nothing (positionOfColumn 99 start)
+  check failures "a resize is written down and asks for the layout to be saved"
+    (Just 180, [Ask Layout])
+    (let (resized, out) = gridEvent (Resized 2 180) start
+     in (lookup 2 [ (c, w) | (p, w) <- columnWidths resized
+                   , Just c <- [lookup p (zip [0 ..] (modelColumns resized))] ], out))
+  check failures "the default width is not worth writing down"
+    [] (columnWidths (fst (gridEvent (Resized 0 104) start)))
+  check failures "Tab moves right and Shift+Tab moves back"
+    (Ref 0 1, Ref 0 0)
+    ( modelActive (fst (pressKey Gdk.KEY_Tab start))
+    , modelActive (fst (pressKey Gdk.KEY_ISO_Left_Tab
+                         (fst (pressKey Gdk.KEY_Tab start)))) )
+  check failures "Page Down goes ten rows at a time, and stops at the end"
+    (Ref 9 0) (modelActive (fst (pressKey Gdk.KEY_Page_Down start)))
+  check failures "a row cannot be moved off the sheet"
+    Nothing (snd <$> moveLine Row 0 (-1) start)
+  check failures "a row insert past the end is refused"
+    Nothing (snd <$> insertLine Row 99 start)
+  check failures "a view with more columns brings them with it"
+    6 (length (modelColumns (withView (emptyView 10 6) start)))
+  check failures "and they are named after the ones already there"
+    [0, 1, 2, 3, 4, 5] (modelColumns (withView (emptyView 10 6) start))
+
+  -- A cell can ask to be drawn in any colour it likes, and GTK has no way to
+  -- set one on a widget except through the stylesheet, so each pair of colours
+  -- becomes a class of its own and the classes are collected into a sheet.
+  let coloured = View 10 4 (M.fromList
+        [ ("A1", Cell "1" True (Just "#ff0000") Nothing Nothing Nothing)
+        , ("B1", Cell "2" True (Just "#ff0000") Nothing Nothing Nothing)
+        , ("C1", Cell "3" True Nothing (Just "#00ff00") Nothing Nothing)
+        , ("D1", Cell "4" True Nothing Nothing Nothing Nothing) ])
+      painted = withView coloured start
+  check failures "a colour a cell asks for becomes a class"
+    2 (M.size (modelPalette painted))
+  check failures "and two cells asking for the same one share it"
+    1 (length (nub [ name | ((c, _), name) <- M.toList (modelPalette painted)
+                   , c == Just "#ff0000" ]))
+  check failures "the stylesheet says what each class is"
+    True (isInfixOf "color: #ff0000" (T.unpack (paletteCss (modelPalette painted))))
+  check failures "and a background as well"
+    True (isInfixOf "background-color: #00ff00"
+            (T.unpack (paletteCss (modelPalette painted))))
+  check failures "a palette that has seen a colour does not learn it twice"
+    2 (M.size (modelPalette (withView coloured painted)))
+
+  -- The window's own state: the sheets it holds, which one is showing, and
+  -- what the kernel owes an answer for.
+  section "the window's state"
+  let blank = newState defaultConfig "/home/nobody"
+      (oneSheet, first') = addTab "Summary" (emptyView 10 4) blank
+      (twoSheets, second') = addTab "Q1" (emptyView 10 4) oneSheet
+      showing = selectTab (tabId first') twoSheets
+  check failures "a new window has no workbook and no sheets"
+    (False, []) (isJust (stateWorkbook blank), tabOrder blank)
+  check failures "and opens on the start page" False (sheetShowing blank)
+  check failures "with nothing to say in the title"
+    "No workbook open" (T.unpack (subtitleOf blank))
+  check failures "a scratch workbook says so instead"
+    "Scratch" (T.unpack (subtitleOf blank { stateScratch = True }))
+  check failures "sheets are added in order" ["Summary", "Q1"] (tabOrder twoSheets)
+  check failures "and each gets a name of its own"
+    True (tabId first' /= tabId second')
+  check failures "the one selected is the one asked for"
+    (Just "Summary") (tabName <$> currentTab showing)
+  check failures "a sheet can be found by name"
+    (Just (tabId second')) (tabId <$> tabNamed "Q1" showing)
+  check failures "and says where it is" (Just 1) (tabPosition (tabId second') showing)
+  check failures "a sheet that is not there is not found"
+    Nothing (tabName <$> tabNamed "nowhere" showing)
+  check failures "reordering the tabs reorders the sheets"
+    ["Q1", "Summary"] (tabOrder (orderTabs [tabId second', tabId first'] showing))
+  check failures "a sheet that the order does not name keeps its place"
+    ["Q1", "Summary"] (tabOrder (orderTabs [tabId second'] showing))
+  -- Closing the sheet that is showing has to leave something showing.
+  check failures "forgetting the sheet on screen shows another"
+    (Just "Q1") (tabName <$> currentTab (forgetTab (tabId first') showing))
+  check failures "and forgetting another leaves the one on screen alone"
+    (Just "Summary") (tabName <$> currentTab (forgetTab (tabId second') showing))
+  check failures "a sheet's cells can be written into it"
+    (Just [("A1", "1")])
+    (tabSources <$> tabById (tabId first')
+       (withTab (tabId first') (\t -> t { tabSources = [("A1", "1")] }) showing))
+  check failures "or into whichever is showing"
+    (Just [("B2", "2")])
+    (tabSources <$> currentTab
+       (withCurrentTab (\t -> t { tabSources = [("B2", "2")] }) showing))
+  check failures "what a cell says is read from the sheet showing"
+    (Just "1") (sourceOf (Ref 0 0)
+       (withCurrentTab (\t -> t { tabSources = [("A1", "1")] }) showing))
 
   section "the store"
   root <- makeTemporaryDirectory
@@ -540,12 +728,23 @@ runKernelTests failures = do
       kernel <- startKernel program arguments
       answers <- newIORef ([] :: [(String, String)])
       let sheet = "Sheet 1"
+      -- The client answers by number, so the test keeps its own note of what
+      -- each number was for, which is what the shell does with it as well.
+      asked <- newIORef (M.empty :: M.Map Int String)
       let remember key value = modifyIORef' answers ((key, value) :)
-          ask op arguments' key = call kernel op arguments'
-            (\payload -> remember key (T.unpack (writeSexp payload)))
-            (\why -> remember key ("FAILED " ++ why))
+          ask op arguments' key = do
+            requestId <- call kernel op arguments'
+            modifyIORef' asked (M.insert requestId key)
+          drain = do
+            replies <- takeReplies kernel
+            forM_ replies $ \reply -> do
+              let (requestId, value) = case reply of
+                    Answered n payload -> (n, T.unpack (writeSexp payload))
+                    Refused n why -> (n, "FAILED " ++ why)
+              found <- M.lookup requestId <$> readIORef asked
+              forM_ found $ \key -> remember key value
           settle key = waitFor 200 $ do
-            _ <- pump kernel
+            drain
             got <- readIORef answers
             pure (lookup key got)
           expect label key wanted = do
@@ -648,14 +847,14 @@ runKernelTests failures = do
       -- The reason the kernel is its own process.
       ask "set-cell" [Str sheet, Str "A5", Str "(let loop () (loop))"] "runaway"
       threadDelay 1500000
-      _ <- pump kernel
+      drain
       spinning <- outstanding kernel
       check failures "a cell that will not finish leaves a request outstanding" 1 spinning
       stalledNow <- stalled kernel 0.5
       check failures "and the kernel counts as stalled" True stalledNow
       -- Pumping over a wedged kernel has to return, every time.
-      forM_ [1 :: Int .. 50] (const (pump kernel))
-      check failures "and the shell pumps over it without blocking" True True
+      forM_ [1 :: Int .. 50] (const drain)
+      check failures "and the shell takes what there is without blocking" True True
 
       restartKernel kernel
       afterRestart <- outstanding kernel

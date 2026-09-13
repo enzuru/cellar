@@ -11,6 +11,25 @@ BLUEPRINTS := $(wildcard ui/*.blp)
 UI := $(BLUEPRINTS:.blp=.ui)
 HASKELL := $(shell find hs -name '*.hs')
 
+# gi-gtk4-declarative, the declarative layer the window is being moved onto.
+#
+# It is not published anywhere yet, so it is compiled from a checkout beside
+# this one rather than named as a package.  Point DECLARATIVE somewhere else
+# if yours is not there.  The compiler builds those sources along with
+# Cellar's, which is why the dev shell carries their dependencies -- see
+# flake.nix.
+DECLARATIVE ?= ../gi-gtk-declarative
+DECLARATIVE_DIRS := $(DECLARATIVE)/gi-gtk4-declarative/src \
+                    $(DECLARATIVE)/gi-gtk4-declarative-app-simple/src \
+                    $(DECLARATIVE)/gi-gtk4-declarative-adwaita/src
+DECLARATIVE_INCLUDES := $(addprefix -i,$(DECLARATIVE_DIRS))
+DECLARATIVE_SOURCES := $(shell find $(DECLARATIVE_DIRS) -name '*.hs' 2>/dev/null)
+
+# The search path every compiler call below uses: Cellar's own modules, then
+# the library's.
+INCLUDES := -ihs $(DECLARATIVE_INCLUDES)
+SOURCES := $(HASKELL) $(DECLARATIVE_SOURCES)
+
 # The same set the cabal file asks for, so that `make build` and a cabal build
 # disagree about nothing.
 WARNINGS := -Wall -Wcompat -Wincomplete-record-updates \
@@ -30,21 +49,21 @@ ui/%.ui: ui/%.blp
 
 build: $(SHELL_BIN)
 
-$(SHELL_BIN): $(HASKELL)
+$(SHELL_BIN): $(SOURCES)
 	@mkdir -p $(BUILD)
-	ghc -ihs -outputdir $(BUILD)/objects -o $@ hs/Main.hs -threaded $(WARNINGS)
+	ghc $(INCLUDES) -outputdir $(BUILD)/objects -o $@ hs/Main.hs -threaded $(WARNINGS)
 
 run: ui build
 	./$(SHELL_BIN) $(FILE)
 
-# Both halves are tested without a display.
-check: check-shell check-kernel
+# Every one of these runs without a display.
+check: check-shell check-window check-kernel
 
 # The shell: references, s-expressions, framing, the store, views, the
 # preferences, and the client driving a real Guile kernel over a real pipe.
 check-shell:
 	@mkdir -p $(BUILD)
-	ghc -ihs -itest -outputdir $(BUILD)/test-objects -o $(BUILD)/cellar-test \
+	ghc $(INCLUDES) -itest -outputdir $(BUILD)/test-objects -o $(BUILD)/cellar-test \
 	  test/Spec.hs -threaded $(WARNINGS)
 	GUILE_AUTO_COMPILE=0 ./$(BUILD)/cellar-test
 
@@ -55,24 +74,22 @@ check-kernel:
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/model-test.scm
 	GUILE_AUTO_COMPILE=0 guile -L src -s tests/kernel-test.scm
 
-# The window, driven from code under a nested X server.
+# The window, driven from code.
 #
-# Not part of `make check`, which needs neither the GTK bindings nor a display.
-# This is the companion to the smoke scripts rather than a replacement for
-# them: it calls what a signal handler would have called and asks the widgets
-# what they say afterwards, so it needs no xdotool, no coordinates and no
-# screenshots, while they keep the half of the story only a real keystroke can
-# tell.
+# The window is a function of one value now, so this hands events to the update
+# and looks at the value that comes back -- with the real kernel over a real
+# pipe and the real folder on disk, and with no display at all, which is why it
+# is part of `make check' rather than a target of its own with an X server
+# behind it.  The smoke scripts under tests/ are the other half: they drive the
+# widgets, which this deliberately does not.
 WINDOW_BIN := $(BUILD)/cellar-window-test
 
-check-window: ui $(WINDOW_BIN)
-	nix shell nixpkgs#xvfb-run nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" \
-	  dbus-run-session -- ./$(WINDOW_BIN)
+check-window: $(WINDOW_BIN)
+	GUILE_AUTO_COMPILE=0 ./$(WINDOW_BIN)
 
-$(WINDOW_BIN): $(HASKELL) test/Window.hs
+$(WINDOW_BIN): $(SOURCES) test/Window.hs
 	@mkdir -p $(BUILD)
-	ghc -ihs -itest -outputdir $(BUILD)/window-objects -o $@ \
+	ghc $(INCLUDES) -itest -outputdir $(BUILD)/window-objects -o $@ \
 	  test/Window.hs -threaded $(WARNINGS)
 
 # What the tests reach, and what they do not.
@@ -93,22 +110,37 @@ INSTRUMENTED := $(filter-out hs/Main.hs,$(HASKELL))
 
 coverage:
 	@mkdir -p $(COVERAGE)
-	ghc -ihs -itest -fhpc -hpcdir $(COVERAGE)/mix \
+	ghc $(INCLUDES) -itest -fhpc -hpcdir $(COVERAGE)/mix \
 	  -outputdir $(COVERAGE)/objects -o $(COVERAGE)/cellar-test \
 	  test/Spec.hs $(INSTRUMENTED) -threaded $(WARNINGS)
+	ghc $(INCLUDES) -itest -fhpc -hpcdir $(COVERAGE)/mix \
+	  -outputdir $(COVERAGE)/window-objects -o $(COVERAGE)/cellar-window-test \
+	  test/Window.hs $(INSTRUMENTED) -threaded $(WARNINGS)
 	@# The counts from the last run were taken against the last build, and
 	@# hpc refuses to mix the two.
-	@rm -f $(COVERAGE)/cellar-test.tix
-	GUILE_AUTO_COMPILE=0 HPCTIXFILE=$(COVERAGE)/cellar-test.tix \
+	@rm -f $(COVERAGE)/*.tix
+	GUILE_AUTO_COMPILE=0 HPCTIXFILE=$(COVERAGE)/shell.tix \
 	  ./$(COVERAGE)/cellar-test
+	GUILE_AUTO_COMPILE=0 HPCTIXFILE=$(COVERAGE)/window.tix \
+	  ./$(COVERAGE)/cellar-window-test
+	@# Both suites, counted together.  Each is its own program with a Main
+	@# of its own, which is the one module they cannot share, and which the
+	@# report leaves out anyway.
+	@hpc sum --union --exclude=Main --output=$(COVERAGE)/both.tix \
+	  $(COVERAGE)/shell.tix $(COVERAGE)/window.tix
+	@# The declarative library is compiled from source along with Cellar, so
+	@# it is instrumented along with it.  It has a test suite of its own and
+	@# this is not it, so it is left out of both reports.
 	@echo
-	@echo "the shell as a whole, the test suite itself left out:"
-	@hpc report $(COVERAGE)/cellar-test.tix --hpcdir=$(COVERAGE)/mix \
-	  --exclude=Main | sed 's/^/  /'
+	@echo "Cellar, the test suites and the library left out:"
+	@hpc report $(COVERAGE)/both.tix --hpcdir=$(COVERAGE)/mix --exclude=Main \
+	  `find $(COVERAGE)/mix -name 'GI.*.mix' -o -name 'Pipes*.mix' \
+	     | sed 's#.*/##; s#\.mix$$##; s#^#--exclude=#'` | sed 's/^/  /'
 	@echo
 	@echo "expressions run, by module:"
-	@hpc report $(COVERAGE)/cellar-test.tix --hpcdir=$(COVERAGE)/mix \
-	  --exclude=Main --per-module \
+	@hpc report $(COVERAGE)/both.tix --hpcdir=$(COVERAGE)/mix --exclude=Main \
+	  --per-module `find $(COVERAGE)/mix -name 'GI.*.mix' -o -name 'Pipes*.mix' \
+	     | sed 's#.*/##; s#\.mix$$##; s#^#--exclude=#'` \
 	  | awk '/^-----<module/ { name = $$2; sub(/>-----/, "", name) } \
 	         /expressions used/ { printf "  %4s  %s\n", $$1, name }'
 

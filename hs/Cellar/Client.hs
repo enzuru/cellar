@@ -19,10 +19,14 @@
 -- without a display.
 module Cellar.Client
   ( Kernel
+  , Reply (..)
   , startKernel
   , kernelAlive
   , call
-  , pump
+  , reserve
+  , sendRequest
+  , takeReplies
+  , awaitReplies
   , outstanding
   , waitingFor
   , waitingOp
@@ -33,10 +37,12 @@ module Cellar.Client
   ) where
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
+import Control.Concurrent.MVar
 import Control.Exception (SomeException, try)
-import Control.Monad (forM_, unless, void, when)
+import Control.Monad (forM_, unless, void)
 import qualified Data.ByteString as B
 import Data.IORef
+import Data.Maybe (isJust)
 import qualified Data.Map.Strict as M
 import GHC.Clock (getMonotonicTime)
 import System.IO
@@ -46,11 +52,20 @@ import System.Process
 import Cellar.Protocol
 import Cellar.Sexp
 
+-- | What the kernel said about a request.
+--
+-- Which request is a number rather than a continuation: the shell holds what
+-- it asked for and why, and this says only what came back.  That is what lets
+-- the answers arrive as events rather than as calls into whatever was in scope
+-- when the question was asked.
+data Reply
+  = Answered Int Sexp     -- ^ The reply to this request.
+  | Refused Int String    -- ^ Why this request will not be answered.
+  deriving (Eq, Show)
+
 -- | A request that has been sent and not yet answered.
 data Pending = Pending
-  { pendingContinue :: Sexp -> IO ()
-  , pendingFail :: String -> IO ()
-  , pendingSent :: Double
+  { pendingSent :: Double
   , pendingOp :: String
   }
 
@@ -68,6 +83,15 @@ data Kernel = Kernel
     -- | Whole messages the reader thread has taken off the pipe, newest first.
     -- The main loop swaps this out; nothing else touches it.
   , kernelInbox :: IORef [Message]
+    -- | Rung whenever something goes in the inbox, so that a thread can wait
+    -- on the kernel rather than ask after it on a timer.  One ring stands for
+    -- any number of messages: what it says is "there is something", and the
+    -- taker finds out how much.
+  , kernelDoorbell :: MVar ()
+    -- | Requests that will not be answered: ones sent to a kernel that was not
+    -- running, and ones abandoned when it stopped.  They are replies like any
+    -- other, but they come from this side of the pipe.
+  , kernelRefused :: IORef [Reply]
   }
 
 -- Starting and stopping
@@ -79,6 +103,8 @@ startKernel program arguments = do
     <$> newIORef Nothing
     <*> newIORef M.empty
     <*> newIORef 0
+    <*> newIORef []
+    <*> newEmptyMVar
     <*> newIORef []
   spawnInto kernel
   pure kernel
@@ -116,16 +142,24 @@ readLoop kernel output = go newDecoder
           | B.null bytes -> deliverEnd
           | otherwise -> do
               let (decoder', messages) = feed decoder bytes
-              unless (null messages) $
+              unless (null messages) $ do
                 atomicModifyIORef' (kernelInbox kernel)
                   (\queued -> (reverse messages ++ queued, ()))
+                ring kernel
               go decoder'
 
     -- End of file: the kernel has gone.  Said as a message so that the main
     -- loop learns about it in the same place it learns about everything else,
     -- rather than by inspecting the process from a timer.
-    deliverEnd = atomicModifyIORef' (kernelInbox kernel)
-      (\queued -> (Garbled "\0end" : queued, ()))
+    deliverEnd = do
+      atomicModifyIORef' (kernelInbox kernel)
+        (\queued -> (Garbled "\0end" : queued, ()))
+      ring kernel
+
+-- | Say that there is something to take.  Never blocks: a bell already rung
+-- says the same thing as one rung twice.
+ring :: Kernel -> IO ()
+ring kernel = void (tryPutMVar (kernelDoorbell kernel) ())
 
 kernelAlive :: Kernel -> IO Bool
 kernelAlive kernel = maybe False (const True) <$> readIORef (kernelRunning kernel)
@@ -158,10 +192,14 @@ restartKernel kernel = do
   stopKernel kernel
   spawnInto kernel
 
+-- | Refuse everything outstanding, because the kernel will not be answering
+-- it.  The refusals queue like any other reply.
+-- | Refuse everything outstanding, because the kernel will not be answering
+-- it.  Nothing is waiting afterwards, and the refusals are on their way.
 failEverything :: Kernel -> String -> IO ()
 failEverything kernel why = do
   waiting <- atomicModifyIORef' (kernelPending kernel) (\m -> (M.empty, m))
-  forM_ (M.elems waiting) $ \p -> ignore (pendingFail p why)
+  forM_ (M.keys waiting) $ \requestId -> refuse kernel requestId why
 
 -- | Run something for its effect and swallow whatever it throws.  Used only
 -- for tearing a dead kernel down, where every step is allowed to have already
@@ -175,20 +213,38 @@ ignore action = do
 
 -- Asking
 
--- | Ask the kernel to do something.  Returns at once, having sent nothing but
--- bytes: the first continuation is called with the reply's payload when it
--- comes back, and the second with a message if the kernel refuses or dies
--- first.
-call :: Kernel -> String -> [Sexp] -> (Sexp -> IO ()) -> (String -> IO ()) -> IO ()
-call kernel op arguments continue onFail = do
+-- | Ask the kernel to do something, and answer with the number of the
+-- request.  Returns at once, having sent nothing but bytes.
+--
+-- What comes back comes back through 'takeReplies', under that number.  A
+-- kernel that is not running is not an error here: the request is refused, and
+-- the refusal arrives the same way an answer would, so the caller has one
+-- place to hear about it rather than two.
+call :: Kernel -> String -> [Sexp] -> IO Int
+call kernel op arguments = do
+  requestId <- reserve kernel
+  sendRequest kernel requestId op arguments
+  pure requestId
+
+-- | Take the next request number without sending anything.
+--
+-- For a caller that has to write down what a request is for before the answer
+-- can arrive: the kernel is quick and another thread is reading the pipe, so
+-- an answer can be in hand before a caller that numbered and sent in one step
+-- has had a chance to say what it asked.
+reserve :: Kernel -> IO Int
+reserve kernel = atomicModifyIORef' (kernelNextId kernel) (\n -> (n + 1, n + 1))
+
+-- | Send a request that has already been given a number.
+sendRequest :: Kernel -> Int -> String -> [Sexp] -> IO ()
+sendRequest kernel requestId op arguments = do
   running <- readIORef (kernelRunning kernel)
   case running of
-    Nothing -> onFail "the kernel is not running"
+    Nothing -> refuse kernel requestId "the kernel is not running"
     Just r -> do
-      requestId <- atomicModifyIORef' (kernelNextId kernel) (\n -> (n + 1, n + 1))
       now <- getMonotonicTime
       atomicModifyIORef' (kernelPending kernel)
-        (\m -> (M.insert requestId (Pending continue onFail now op) m, ()))
+        (\m -> (M.insert requestId (Pending now op) m, ()))
       sent <- try (do B.hPut (runningStdin r) (requestBytes requestId op arguments)
                       hFlush (runningStdin r))
                 :: IO (Either SomeException ())
@@ -199,6 +255,13 @@ call kernel op arguments continue onFail = do
         Left _ -> do
           writeIORef (kernelRunning kernel) Nothing
           failEverything kernel "the kernel stopped answering"
+
+-- | Put a refusal in the queue, for a request the kernel will not answer.
+refuse :: Kernel -> Int -> String -> IO ()
+refuse kernel requestId why = do
+  atomicModifyIORef' (kernelRefused kernel)
+    (\queued -> (Refused requestId why : queued, ()))
+  ring kernel
 
 outstanding :: Kernel -> IO Int
 outstanding kernel = M.size <$> readIORef (kernelPending kernel)
@@ -247,36 +310,50 @@ markReady kernel = do
 
 -- Listening
 
--- | Hand out whatever the kernel has said.  Returns whether anything happened.
--- Called from the main loop, and does no reading itself: the reader thread has
--- already done that, so this is a swap of an 'IORef' and a few calls.
-pump :: Kernel -> IO Bool
-pump kernel = do
+-- | Take whatever the kernel has said, and say nothing if it has said nothing.
+--
+-- The reader thread has already done the reading, so this is a swap of an
+-- 'IORef' and a little bookkeeping.  A reply to a request that is no longer
+-- outstanding is dropped: an answer to something abandoned when the kernel
+-- restarted is not a reason to do anything.
+takeReplies :: Kernel -> IO [Reply]
+takeReplies kernel = do
+  refused <- atomicModifyIORef' (kernelRefused kernel) (\q -> ([], reverse q))
   queued <- atomicModifyIORef' (kernelInbox kernel) (\q -> ([], reverse q))
-  forM_ queued (deliver kernel)
-  pure (not (null queued))
+  answers <- concat <$> mapM (interpret kernel) queued
+  pure (refused ++ answers)
 
-deliver :: Kernel -> Message -> IO ()
-deliver kernel message = case message of
-  Reply requestId payload -> answer kernel requestId (Right payload)
-  Failed requestId why -> answer kernel requestId (Left why)
+-- | Wait until the kernel has said something, and take it.
+--
+-- This is what a thread of its own does with a kernel: block here, hand on
+-- what comes back, and block again.  Nothing is polled and nothing is timed.
+awaitReplies :: Kernel -> IO [Reply]
+awaitReplies kernel = do
+  takeMVar (kernelDoorbell kernel)
+  replies <- takeReplies kernel
+  -- One ring can stand for messages that a previous take already carried off,
+  -- so an empty handful means wait again rather than hand back nothing.
+  if null replies then awaitReplies kernel else pure replies
+
+interpret :: Kernel -> Message -> IO [Reply]
+interpret kernel message = case message of
+  Reply requestId payload -> forget requestId (Answered requestId payload)
+  Failed requestId why -> forget requestId (Refused requestId why)
   -- The reader thread's way of saying the pipe ended.
   Garbled "\0end" -> do
     alive <- kernelAlive kernel
-    when alive $ do
+    if not alive then pure [] else do
       running <- readIORef (kernelRunning kernel)
       writeIORef (kernelRunning kernel) Nothing
       forM_ running $ \r -> ignore (void (waitForProcess (runningProcess r)))
-      failEverything kernel "the kernel stopped without saying why"
-  Garbled why -> failEverything kernel ("the kernel said something unreadable: " ++ why)
-
--- | Hand the answer to a request to whoever asked, and forget it.  An id that
--- is not outstanding is dropped: a reply to a request that was abandoned when
--- the kernel restarted is not a reason to do anything.
-answer :: Kernel -> Int -> Either String Sexp -> IO ()
-answer kernel requestId outcome = do
-  found <- atomicModifyIORef' (kernelPending kernel) $ \waiting ->
-    (M.delete requestId waiting, M.lookup requestId waiting)
-  forM_ found $ \p -> case outcome of
-    Left why -> pendingFail p why
-    Right payload -> pendingContinue p payload
+      refusals "the kernel stopped without saying why"
+  Garbled why -> refusals ("the kernel said something unreadable: " ++ why)
+  where
+    -- A reply is worth handing on only if somebody is still waiting for it.
+    forget requestId reply = do
+      found <- atomicModifyIORef' (kernelPending kernel) $ \waiting ->
+        (M.delete requestId waiting, M.lookup requestId waiting)
+      pure [reply | isJust found]
+    refusals why = do
+      waiting <- atomicModifyIORef' (kernelPending kernel) (\m -> (M.empty, m))
+      pure [Refused requestId why | requestId <- M.keys waiting]

@@ -44,12 +44,13 @@ executable cellar
     hs-source-dirs:   hs
     main-is:          Main.hs
     other-modules:    Cellar.App
-                      Cellar.App.Types
-                      Cellar.App.Kernel
-                      Cellar.App.Workbook
-                      Cellar.App.Recent
-                      Cellar.App.Dialogs
-                      Cellar.Grid
+                      Cellar.App.Env
+                      Cellar.App.Event
+                      Cellar.App.State
+                      Cellar.App.Update
+                      Cellar.App.View
+                      Cellar.Grid.Gestures
+                      Cellar.Grid.Model
                       Cellar.Editor
                       Cellar.Watch
                       Cellar.Ref
@@ -78,6 +79,14 @@ executable cellar
                     , gi-adwaita
                     , gi-gtksource5
                     , gi-pango
+                    , gi-gtk4-declarative
+                    , gi-gtk4-declarative-adwaita
+                    , gi-gtk4-declarative-app-simple
+                    , pipes
+                    , pipes-concurrency
+                    , async
+                    , stm
+                    , vector
     default-language: Haskell2010
 
 test-suite cellar-test

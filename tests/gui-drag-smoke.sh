@@ -124,6 +124,18 @@ expect "the dragged column landed where it was dropped" \
   holds "$SHEET/cells/C3.scm" '"first"'
 expect "and its reference came with it" holds "$SHEET/cells/C1.scm" '"second"'
 
+# And again.  A column that moves is taken out of the view and put back, and
+# GTK builds a fresh heading when it does, so a drag that only works once is a
+# drag whose gesture went with the old heading.
+echo "3. dragging a column a second time"
+drag 325 151 118 151
+shot 4-column-dragged-back
+
+settle 30 holds "$SHEET/cells/A3.scm" '"first"'
+expect "a column can be dragged more than once" \
+  holds "$SHEET/cells/A3.scm" '"first"'
+expect "and its reference came back with it" holds "$SHEET/cells/A1.scm" '"second"'
+
 echo
 echo "app log (excluding harmless environment noise):"
 grep -av "libEGL\|DRI3\|dbus-daemon\|atk-bridge\|AT-SPI\|portal\|fusermount\|Registry\|display server" \
