@@ -2,6 +2,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE OverloadedLists #-}
 
 -- | The grid, as a value and a function.
