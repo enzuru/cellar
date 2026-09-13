@@ -37,7 +37,7 @@ import Cellar.Client
 import Cellar.Config
 import Cellar.Grid.Model
 import Cellar.Ref
-import Cellar.Sexp (asInt, lookupKey)
+import Cellar.Sexp (asInt, list, lookupKey)
 import Cellar.Store
 import Cellar.View
 
@@ -233,10 +233,31 @@ tests window root = do
     check window "a cell written from outside is taken in" True noticed
 
   section "the kernel"
-  happens window Tick
+  -- Nothing is said about a kernel that has never answered, because one that
+  -- is still starting has been waiting for reasons that have nothing to do
+  -- with the cell it was handed.
+  happens window (Stalled True)
+  early <- stateOf window
+  check window "a kernel that has not answered yet is not complained about"
+    False (stateAskingAboutKernel early)
+  happens window (KernelSaid Pinged (list []))
+  answered' <- stateOf window
+  check window "the first answer says the kernel is up" True
+    (stateKernelAnswered answered')
+  -- The watchdog says something only when the answer changes, and what it says
+  -- is answered here rather than decided here.
+  happens window (Stalled True)
+  asking' <- stateOf window
+  check window "a kernel that is sitting on something is asked about" True
+    (stateAskingAboutKernel asking')
+  happens window (Stalled False)
   settled <- stateOf window
-  check window "with nothing outstanding, nothing is being waited for" False
+  check window "and a kernel that finishes is not asked about any more" False
     (stateAskingAboutKernel settled)
+  happens window NeverMind
+  waiting <- stateOf window
+  check window "being told to keep waiting stops it asking again" True
+    (stateWaitingOnPurpose waiting)
   happens window (KernelRefused Ignored "no such thing")
   check window "a refusal for a request nobody holds changes nothing" True True
 

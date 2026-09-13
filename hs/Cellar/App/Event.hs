@@ -78,14 +78,13 @@ data Event
   | KernelSaid Tag Sexp
     -- ^ The kernel answered something, and this is what it was for.
   | KernelRefused Tag String
-  | Tick
+  | Stalled Bool
+    -- ^ The kernel has been sitting on a request for longer than anybody would
+    -- expect, or has stopped doing so.  Said only when it changes: a window
+    -- with nothing wrong with it hears nothing.
   -- What was asked for
   | Act Action
   -- What came back from something the update asked for
-  | Asking
-    -- ^ The dialog about a cell that will not finish is up.
-  | Settled
-    -- ^ The kernel owes nothing, so there is nothing to worry about.
   | NeverMind
     -- ^ That dialog was answered with "keep waiting".
   | Stopped

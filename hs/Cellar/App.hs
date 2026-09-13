@@ -39,6 +39,7 @@ import Cellar.App.Env
 import Cellar.App.Event
 import Cellar.App.State
 import qualified Cellar.App.Update as Update
+import Cellar.App.Update (patienceSeconds)
 import Cellar.App.View
 import Cellar.Client
 import Cellar.Config
@@ -111,7 +112,7 @@ startWindow application opening = do
       simple = App
         { view = windowView viewEnv
         , Simple.update = Update.update env
-        , inputs = [fromInput input, kernelReplies env, clock]
+        , inputs = [fromInput input, kernelReplies env, watchdog env]
         , initialState = newState config home
         }
 
@@ -162,9 +163,22 @@ kernelReplies env = forever $ do
       tag <- liftIO (tagOf env requestId)
       yield (KernelRefused tag why)
 
--- | Twice a second, so that a cell which will not finish is noticed.
-clock :: Producer Event IO ()
-clock = forever (liftIO (threadDelay 500000) >> yield Tick)
+-- | Watch for a cell that is not going to finish.
+--
+-- Twice a second, and silent nearly all of the time: it says something only
+-- when the answer changes, because every event it posts is a turn of the loop
+-- and a window with nothing wrong with it should cost nothing at all.
+watchdog :: Env -> Producer Event IO ()
+watchdog env = go False
+  where
+    go before = do
+      liftIO (threadDelay 500000)
+      alive <- liftIO (kernelAlive (envKernel env))
+      waiting <- liftIO (outstanding (envKernel env))
+      now <- if not alive || waiting == 0
+        then pure False
+        else liftIO (stalled (envKernel env) patienceSeconds)
+      if now == before then go before else yield (Stalled now) >> go now
 
 --
 -- The actions

@@ -170,30 +170,27 @@ update env state = \case
 
   KernelRefused _ why -> after state (notify env (T.pack why))
 
-  -- Twice a second, to notice a cell that is not going to finish.  There is no
-  -- way to tell one apart from a cell that is merely slow -- that is the
-  -- halting problem -- so this does not decide anything.  It waits until a
-  -- request has gone unanswered for longer than anybody would expect, and
-  -- then asks.
-  Tick -> Transition state $ do
-    alive <- kernelAlive (envKernel env)
-    waiting <- outstanding (envKernel env)
-    isStalled <- stalled (envKernel env) patienceSeconds
-    if not alive || not (stateKernelAnswered state)
-      then pure Nothing
-      else if waiting == 0
-        then do
-          neverMindTheKernel env
-          pure (Just Settled)
-        else do
-          let ask = not (stateAskingAboutKernel state)
-                      && not (stateWaitingOnPurpose state) && isStalled
-          when ask (askAboutTheKernel env)
-          pure (if ask then Just Asking else Nothing)
+  -- A cell that is not going to finish looks, from out here, exactly like one
+  -- that is merely slow -- that is the halting problem, and Cellar is not
+  -- going to solve it on a timer.  So this decides nothing: when the kernel
+  -- has been sitting on something for longer than anybody would expect, it
+  -- asks.
+  Stalled True
+    | stateKernelAnswered state
+    , not (stateAskingAboutKernel state)
+    , not (stateWaitingOnPurpose state) ->
+        after state { stateAskingAboutKernel = True } (askAboutTheKernel env)
+    | otherwise -> stay state
 
-  Asking -> stay state { stateAskingAboutKernel = True }
-  Settled -> stay state { stateAskingAboutKernel = False, stateWaitingOnPurpose = False }
-  NeverMind -> stay state { stateAskingAboutKernel = False, stateWaitingOnPurpose = True }
+  Stalled False
+    | stateAskingAboutKernel state || stateWaitingOnPurpose state ->
+        after state { stateAskingAboutKernel = False
+                    , stateWaitingOnPurpose = False }
+              (neverMindTheKernel env)
+    | otherwise -> stay state
+
+  NeverMind -> stay state { stateAskingAboutKernel = False
+                          , stateWaitingOnPurpose = True }
 
   -- Stopping restarts the kernel and reopens every sheet as it stands on disk.
   Stopped -> after state { stateAskingAboutKernel = False
