@@ -158,6 +158,8 @@ smoke: ui build
 	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-drag-smoke.sh
 	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
 	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-editor-smoke.sh
+	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#dbus \
+	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-colour-smoke.sh
 
 clean:
 	rm -f $(UI)

@@ -40,6 +40,7 @@ module Cellar.App.Env
   , answerEditor
   , watchPathsFor
   , unwatchAll
+  , showPalette
   , fillRecentMenu
   , openWithDesktop
   , object
@@ -57,6 +58,7 @@ import System.FilePath ((</>), takeFileName)
 
 import Data.GI.Base
 import qualified GI.Adw as Adw
+import qualified GI.Gdk as Gdk
 import qualified GI.GLib as GLib
 import qualified GI.Gio as Gio
 import qualified GI.Gtk as Gtk
@@ -101,11 +103,24 @@ data Env = Env
     -- its length is not known until the preferences are read.
   , envRecentSection :: Gio.Menu
   , envStallDialog :: IORef (Maybe Adw.AlertDialog)
+    -- | The stylesheet the cells' own colours go into.  A cell can ask to be
+    -- drawn in any colour it likes, and GTK has no way to set one on a widget
+    -- except through a stylesheet, so each pair of colours becomes a class and
+    -- this is where the classes are written.
+  , envPalette :: Gtk.CssProvider
   }
 
 newEnv :: Kernel -> (Event -> IO ()) -> FilePath -> Gtk.Builder -> IO Env
 newEnv kernel poster uiDirectory builder = do
   section <- Gio.menuNew
+  -- Above the stylesheet beside the .ui files, which says what a cell looks
+  -- like in general; this says what one particular cell was asked to look
+  -- like.
+  palette <- do
+    provider <- Gtk.cssProviderNew
+    display <- Gdk.displayGetDefault
+    forM_ display $ \d -> Gtk.styleContextAddProviderForDisplay d provider 700
+    pure provider
   primary <- object builder "primary_menu" Gio.Menu
   -- Position 1: after the section that opens and makes workbooks, which is
   -- where somebody looking for Open Recent looks.
@@ -119,6 +134,7 @@ newEnv kernel poster uiDirectory builder = do
     <*> newIORef M.empty
     <*> pure section
     <*> newIORef Nothing
+    <*> pure palette
 
 post :: Env -> Event -> IO ()
 post = envPost
@@ -470,6 +486,10 @@ openWithDesktop env path = onMain $ do
       case outcome :: Either SomeException () of
         Right () -> pure ()
         Left _ -> post env (Toast (T.pack ("Could not open " ++ takeFileName path)))
+
+-- | Write the colours the cells have asked for into the stylesheet.
+showPalette :: Env -> Text -> IO ()
+showPalette env css = onMain (Gtk.cssProviderLoadFromString (envPalette env) css)
 
 --
 -- The folder on disk

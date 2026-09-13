@@ -320,19 +320,24 @@ main = do
         , ("B1", Cell "2" True (Just "#ff0000") Nothing Nothing Nothing)
         , ("C1", Cell "3" True Nothing (Just "#00ff00") Nothing Nothing)
         , ("D1", Cell "4" True Nothing Nothing Nothing Nothing) ])
-      painted = withView coloured start
-  check failures "a colour a cell asks for becomes a class"
-    2 (M.size (modelPalette painted))
+      -- The window learns the colours and hands them down, because the names
+      -- go into one stylesheet and two sheets counting from zero would mean
+      -- two colours under one name.
+      colours = paletteFor coloured M.empty
+      painted = withPalette colours (withView coloured start)
+  check failures "a colour a cell asks for becomes a class" 2 (M.size colours)
   check failures "and two cells asking for the same one share it"
-    1 (length (nub [ name | ((c, _), name) <- M.toList (modelPalette painted)
-                   , c == Just "#ff0000" ]))
+    1 (length (nub [ name | ((c, _), name) <- M.toList colours, c == Just "#ff0000" ]))
+  check failures "the sheet it is drawn on is given the palette"
+    2 (M.size (modelPalette painted))
   check failures "the stylesheet says what each class is"
-    True (isInfixOf "color: #ff0000" (T.unpack (paletteCss (modelPalette painted))))
+    True (isInfixOf "color: #ff0000" (T.unpack (paletteCss colours)))
   check failures "and a background as well"
-    True (isInfixOf "background-color: #00ff00"
-            (T.unpack (paletteCss (modelPalette painted))))
+    True (isInfixOf "background-color: #00ff00" (T.unpack (paletteCss colours)))
   check failures "a palette that has seen a colour does not learn it twice"
-    2 (M.size (modelPalette (withView coloured painted)))
+    2 (M.size (paletteFor coloured colours))
+  check failures "and a sheet with no colours in it adds none"
+    0 (M.size (paletteFor (emptyView 10 4) M.empty))
 
   -- The window's own state: the sheets it holds, which one is showing, and
   -- what the kernel owes an answer for.

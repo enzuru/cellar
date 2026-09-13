@@ -38,6 +38,7 @@ module Cellar.App.State
   , Tag (..)
   ) where
 
+import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -120,6 +121,10 @@ data State = State
     -- is written to disk during that.
   , stateLoading :: Bool
   , stateWatching :: [FilePath]
+    -- | The colours the cells of this workbook have asked for, and the class
+    -- each one is drawn under.  One palette for the window rather than one per
+    -- sheet, because the names go into one stylesheet.
+  , statePalette :: M.Map (Maybe String, Maybe String) Text
     -- | Set for a workbook Cellar made a moment ago, whose folders are empty
     -- until its sheets have been written out once.
   , stateFresh :: Bool
@@ -146,6 +151,7 @@ newState config home = State
   , stateAskingAboutKernel = False
   , stateLoading = False
   , stateWatching = []
+  , statePalette = M.empty
   , stateFresh = False
   , stateCloseAnswer = Nothing
   }

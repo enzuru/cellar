@@ -411,6 +411,7 @@ answered env state tag payload = case tag of
         started = withTab tab (\t -> t { tabGrid = fromMaybe (tabGrid t)
                                            (withActive (Ref 0 0) (tabGrid t)) }) taken
     in after started $ do
+         showPaletteIfNew env state started
          -- A workbook Cellar made a moment ago has a sheet folder that says
          -- nothing about its size, and the sheet on screen is the ordinary
          -- 100 by 26.  Writing it out once is what makes the folder say what
@@ -421,11 +422,14 @@ answered env state tag payload = case tag of
     let taken = snapshotInto tab payload state
         back = withTab tab (\t -> t { tabGrid = fromMaybe (tabGrid t)
                                         (withActive kept (tabGrid t)) }) taken
-    in after back (saveIfRewritten env back tab payload)
+    in after back $ do
+         showPaletteIfNew env state back
+         saveIfRewritten env back tab payload
 
   Snapshot tab said ->
     let taken = snapshotInto tab payload state
     in after taken $ do
+         showPaletteIfNew env state taken
          saveIfRewritten env taken tab payload
          forM_ said (notify env)
 
@@ -435,6 +439,7 @@ answered env state tag payload = case tag of
                            state
         taken = snapshotInto tab payload kept
     in after taken $ do
+         showPaletteIfNew env state taken
          forM_ (tabById tab taken) $ \found ->
            forM_ (sheetFolder taken found) $ \folder ->
              quietly (saveCell folder name source)
@@ -445,9 +450,23 @@ answered env state tag payload = case tag of
   Renamed tab -> after (snapshotInto tab payload state) (pure ())
 
 -- | Take a snapshot into a tab, and into any other sheet the answer mentions.
+--
+-- A snapshot can bring colours the window has not seen before, and a colour is
+-- drawn through a class in a stylesheet, so learning them is part of taking a
+-- snapshot.  One palette for the window, handed down to every sheet, because
+-- the names in it go into one stylesheet.
 snapshotInto :: TabId -> Sexp -> State -> State
-snapshotInto tab payload state = othersFrom payload (into tab payload state)
+snapshotInto tab payload state = repainted
   where
+    taken = othersFrom payload (into tab payload state)
+    palette = foldl (\known t -> paletteFor (modelView (tabGrid t)) known)
+                    (statePalette taken) (stateTabs taken)
+    repainted
+      | palette == statePalette taken = taken
+      | otherwise = taken
+          { statePalette = palette
+          , stateTabs = [ t { tabGrid = withPalette palette (tabGrid t) }
+                        | t <- stateTabs taken ] }
     into which answer s = withTab which (\t ->
       let sources = maybe (tabSources t) readSources (lookupKey "sources" answer)
       in t { tabSources = sources
@@ -467,6 +486,14 @@ othersFrom payload state = foldl into state others
           in tab { tabSources = sources
                  , tabGrid = withView (viewFromSnapshot snapshot sources) (tabGrid tab) })
           s
+
+-- | Write the colours out, when a snapshot brought one the window had not
+-- seen.  The stylesheet is GTK's to hold, which is why this is the one part of
+-- taking a snapshot that is not a change to a value.
+showPaletteIfNew :: Env -> State -> State -> IO ()
+showPaletteIfNew env before after' =
+  when (statePalette after' /= statePalette before)
+       (showPalette env (paletteCss (statePalette after')))
 
 -- | An answer that rewrote cell sources is one the folder has to be told
 -- about: moving a row or renaming a sheet changes what cells say, here and on

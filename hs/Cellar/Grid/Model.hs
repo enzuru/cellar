@@ -28,6 +28,8 @@ module Cellar.Grid.Model
   , handledKey
     -- * Changes from outside
   , withView
+  , withPalette
+  , paletteFor
   , withActive
   , withWidths
   , withDrag
@@ -208,7 +210,6 @@ withView view model = model
   , modelRows = max (modelRows model) (viewRows view)
   , modelColumns = modelColumns model ++ fresh
   , modelNextColumn = modelNextColumn model + length fresh
-  , modelPalette = learnColours view (modelPalette model)
   }
   where
     fresh = take (viewColumns view - length (modelColumns model))
@@ -333,9 +334,16 @@ moveItem from to xs
 -- The palette
 --
 
-learnColours :: View -> M.Map (Maybe String, Maybe String) Text
-             -> M.Map (Maybe String, Maybe String) Text
-learnColours view = \palette -> foldl add palette styles
+-- | Which colours a sheet asks for, added to the ones already known.
+--
+-- The names are handed out in the order the colours are met, so the same
+-- palette has to be used by every sheet of a window: two sheets each counting
+-- from zero would mean two different colours under one name, and one
+-- stylesheet cannot say both.  The window keeps it and hands it down with
+-- 'withPalette'.
+paletteFor :: View -> M.Map (Maybe String, Maybe String) Text
+           -> M.Map (Maybe String, Maybe String) Text
+paletteFor view = \palette -> foldl add palette styles
   where
     styles = [ (cellColor cell, cellBackground cell)
              | cell <- M.elems (viewCells view)
@@ -344,6 +352,10 @@ learnColours view = \palette -> foldl add palette styles
       | M.member style palette = palette
       | otherwise =
           M.insert style (T.pack ("cellar-style-" ++ show (M.size palette))) palette
+
+-- | Draw with these colours.
+withPalette :: M.Map (Maybe String, Maybe String) Text -> GridModel -> GridModel
+withPalette palette model = model { modelPalette = palette }
 
 -- | The stylesheet a palette comes to.
 paletteCss :: M.Map (Maybe String, Maybe String) Text -> Text
