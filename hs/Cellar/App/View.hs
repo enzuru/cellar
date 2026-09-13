@@ -250,7 +250,7 @@ sheets env state = tabView
   ]
   defaultTabViewParams
     { tabs = V.fromList (map (sheet env) (stateTabs state))
-    , selected = keyOf <$> stateCurrent state
+    , selected = keyOf . openCurrent <$> stateOpen state
     , onSelected = Just (TabSelected . readKey)
     , onReordered = Just (TabsReordered . map readKey . V.toList)
     , onClosePage = Just (TabCloseAsked . readKey)

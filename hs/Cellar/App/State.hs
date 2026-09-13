@@ -17,6 +17,7 @@ module Cellar.App.State
   ( -- * The state
     State (..)
   , Page (..)
+  , Open (..)
   , Tab (..)
   , TabId (..)
   , newState
@@ -24,14 +25,22 @@ module Cellar.App.State
   , currentTab
   , tabById
   , tabNamed
+  , stateTabs
+  , stateWorkbook
+  , stateScratch
   , tabOrder
   , tabPosition
   , subtitleOf
   , sheetShowing
   , sourceOf
     -- * Changing it
+  , withOpen
   , withTab
+  , withTabs
   , withCurrentTab
+  , withWorkbook
+  , opened
+  , freshTab
   , addTab
   , forgetTab
   , selectTab
@@ -41,6 +50,9 @@ module Cellar.App.State
   ) where
 
 import qualified Data.Map.Strict as M
+import Data.Foldable (find, toList)
+import Data.List.NonEmpty (NonEmpty ((:|)))
+import qualified Data.List.NonEmpty as NE
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -101,11 +113,24 @@ data Tag
     -- ^ An answer nobody is waiting for.
   deriving (Eq, Show)
 
+-- | A workbook, with its sheets and the one showing.
+--
+-- The three are one value because they are true together: a workbook has at
+-- least one sheet -- the window refuses to close the last -- and one of those
+-- sheets is on screen.  Held apart, as a workbook and a list and a name, the
+-- state could say things that never happen, and every reader had to allow for
+-- them.
+data Open = Open
+  { openWorkbook :: Workbook
+  , openTabs :: NonEmpty Tab
+  , openCurrent :: TabId
+    -- | A workbook Cellar made to think in, which is not offered as a recent
+    -- one and says so under the title.
+  , openScratch :: Bool
+  }
+
 data State = State
-  { stateWorkbook :: Maybe Workbook
-  , stateScratch :: Bool
-  , stateTabs :: [Tab]
-  , stateCurrent :: Maybe TabId
+  { stateOpen :: Maybe Open
   , stateNextTab :: TabId
   , statePage :: Page
   , stateRecent :: [FilePath]
@@ -139,10 +164,7 @@ data State = State
 
 newState :: Config -> FilePath -> State
 newState config home = State
-  { stateWorkbook = Nothing
-  , stateScratch = False
-  , stateTabs = []
-  , stateCurrent = Nothing
+  { stateOpen = Nothing
   , stateNextTab = TabId 1
   , statePage = StartPage
   , stateRecent = recentWorkbooks config
@@ -163,8 +185,22 @@ newState config home = State
 -- Asking after it
 --
 
+-- | The sheets of the workbook, in the order their tabs are in.
+stateTabs :: State -> [Tab]
+stateTabs = maybe [] (toList . openTabs) . stateOpen
+
+stateWorkbook :: State -> Maybe Workbook
+stateWorkbook = fmap openWorkbook . stateOpen
+
+-- | Whether the workbook open is one Cellar made to think in.
+stateScratch :: State -> Bool
+stateScratch = maybe False openScratch . stateOpen
+
+-- | The sheet on screen.  There is one whenever a workbook is open.
 currentTab :: State -> Maybe Tab
-currentTab state = stateCurrent state >>= \wanted -> tabById wanted state
+currentTab state = do
+  open <- stateOpen state
+  find ((== openCurrent open) . tabId) (openTabs open)
 
 tabById :: TabId -> State -> Maybe Tab
 tabById wanted state = listToMaybe [ t | t <- stateTabs state, tabId t == wanted ]
@@ -172,7 +208,7 @@ tabById wanted state = listToMaybe [ t | t <- stateTabs state, tabId t == wanted
 tabNamed :: String -> State -> Maybe Tab
 tabNamed name state = listToMaybe [ t | t <- stateTabs state, tabName t == name ]
 
--- | The sheets in the order their tabs are in.
+-- | The sheets by name, in the order their tabs are in.
 tabOrder :: State -> [String]
 tabOrder = map tabName . stateTabs
 
@@ -182,10 +218,11 @@ tabPosition wanted state =
 
 -- | What the title says under "Cellar".
 subtitleOf :: State -> Text
-subtitleOf state = case (stateScratch state, stateWorkbook state) of
-  (True, _) -> "Scratch"
-  (_, Just open) -> T.pack (workbookName open)
-  _ -> "No workbook open"
+subtitleOf state = case stateOpen state of
+  Nothing -> "No workbook open"
+  Just open
+    | openScratch open -> "Scratch"
+    | otherwise -> T.pack (workbookName (openWorkbook open))
 
 sheetShowing :: State -> Bool
 sheetShowing state = statePage state == SheetPage
@@ -198,54 +235,91 @@ sourceOf r state = currentTab state >>= lookup (refName r) . tabSources
 -- Changing it
 --
 
--- | Change one tab, by its identifier.
-withTab :: TabId -> (Tab -> Tab) -> State -> State
-withTab wanted change state = state
-  { stateTabs = [ if tabId t == wanted then change t else t | t <- stateTabs state ] }
+-- | Change the workbook that is open, if one is.
+withOpen :: (Open -> Open) -> State -> State
+withOpen change state = state { stateOpen = change <$> stateOpen state }
 
--- | Change the tab that is showing, if one is.
+-- | Change one sheet, by its name.
+withTab :: TabId -> (Tab -> Tab) -> State -> State
+withTab wanted change = withOpen $ \open -> open
+  { openTabs = fmap (\t -> if tabId t == wanted then change t else t) (openTabs open) }
+
+-- | Change every sheet of the workbook.
+withTabs :: (Tab -> Tab) -> State -> State
+withTabs change = withOpen $ \open -> open { openTabs = fmap change (openTabs open) }
+
+-- | Say the workbook again, after a write has moved or renamed something in
+-- it.  The sheets stay as they are.
+withWorkbook :: Workbook -> State -> State
+withWorkbook workbook = withOpen $ \open -> open { openWorkbook = workbook }
+
+-- | Change the sheet that is showing, if one is.
 withCurrentTab :: (Tab -> Tab) -> State -> State
 withCurrentTab change state =
   maybe state (\t -> withTab (tabId t) change state) (currentTab state)
+
+-- | Open this workbook, showing these sheets.  The sheet named is the one on
+-- screen, and the first stands in when the name is not one of them.
+opened :: Workbook -> NonEmpty Tab -> Maybe String -> Bool -> State -> State
+opened workbook tabs showing scratch state = state
+  { stateOpen = Just Open
+      { openWorkbook = workbook
+      , openTabs = tabs
+      , openCurrent = maybe (tabId (NE.head tabs)) tabId
+          (find ((== showing) . Just . tabName) tabs)
+      , openScratch = scratch
+      }
+  }
+
+-- | A sheet of this workbook, not yet part of it.
+freshTab :: String -> View -> State -> (State, Tab)
+freshTab name view state =
+  ( state { stateNextTab = nextAfter (stateNextTab state) }
+  , Tab { tabId = stateNextTab state
+        , tabName = name
+        , tabSources = []
+        , tabGrid = newGridModel view
+        } )
 
 -- | The name the sheet after this one takes.
 nextAfter :: TabId -> TabId
 nextAfter (TabId n) = TabId (n + 1)
 
--- | Add a sheet at the end, and say which tab it became.
-addTab :: String -> View -> State -> (State, Tab)
-addTab name view state =
-  let tab = Tab { tabId = stateNextTab state
-                , tabName = name
-                , tabSources = []
-                , tabGrid = newGridModel view
-                }
-  in ( state { stateTabs = stateTabs state ++ [tab]
-             , stateNextTab = nextAfter (stateNextTab state)
-             }
-     , tab )
-
-forgetTab :: TabId -> State -> State
-forgetTab wanted state = state
-  { stateTabs = [ t | t <- stateTabs state, tabId t /= wanted ]
-  , stateCurrent = case stateCurrent state of
-      Just showing | showing == wanted -> tabId <$> listToMaybe remaining
-      other -> other
+-- | Add a sheet at the end, and show it.
+addTab :: Tab -> State -> State
+addTab tab = withOpen $ \open -> open
+  { openTabs = openTabs open <> (tab :| [])
+  , openCurrent = tabId tab
   }
-  where remaining = [ t | t <- stateTabs state, tabId t /= wanted ]
+
+-- | Take a sheet away.  The last sheet of a workbook cannot go: a workbook
+-- with no sheets is not a thing this module allows for, and the window refuses
+-- to close one before it gets here.
+forgetTab :: TabId -> State -> State
+forgetTab wanted = withOpen $ \open ->
+  case NE.nonEmpty [ t | t <- toList (openTabs open), tabId t /= wanted ] of
+    Nothing -> open
+    Just left -> open
+      { openTabs = left
+      , openCurrent = if openCurrent open == wanted
+          then tabId (NE.head left) else openCurrent open
+      }
 
 selectTab :: TabId -> State -> State
-selectTab wanted state
-  | any ((== wanted) . tabId) (stateTabs state) = state { stateCurrent = Just wanted }
-  | otherwise = state
+selectTab wanted = withOpen $ \open ->
+  if any ((== wanted) . tabId) (openTabs open)
+    then open { openCurrent = wanted }
+    else open
 
--- | Put the tabs in this order, naming them by identifier.  Anything the order
--- does not name keeps its place at the end, which is what a reorder of a tab
--- view that has just gained a page looks like.
+-- | Put the sheets in this order, naming them by identifier.  Anything the
+-- order does not name keeps its place at the end, which is what a reorder of a
+-- tab view that has just gained a page looks like.
 orderTabs :: [TabId] -> State -> State
-orderTabs wanted state = state { stateTabs = named ++ rest }
+orderTabs wanted = withOpen $ \open ->
+  case NE.nonEmpty (named open ++ rest open) of
+    Nothing -> open
+    Just ordered -> open { openTabs = ordered }
   where
-    named = [ t | identifier <- wanted, t <- stateTabs state, tabId t == identifier ]
-    rest = [ t | t <- stateTabs state, tabId t `notElem` wanted ]
-
-
+    named open = [ t | identifier <- wanted
+                 , t <- toList (openTabs open), tabId t == identifier ]
+    rest open = [ t | t <- toList (openTabs open), tabId t `notElem` wanted ]

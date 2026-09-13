@@ -80,7 +80,7 @@ data Command
 -- | What the grid wants done, which is not always about the sheet.
 data GridOut
   = Ask Command            -- ^ Change the sheet, and hand back a new view.
-  | Open Ref               -- ^ Open the editor on this cell.
+  | Edit Ref               -- ^ Open the editor on this cell.
   deriving (Eq, Show)
 
 -- | What number a column's name is, for handing out the next one.  Nothing
@@ -151,7 +151,7 @@ gridEvent event model = case event of
   Pressed r presses ->
     -- The whole point of the app: a second click opens the editor.
     ( fromMaybe model (withActive r model)
-    , [Open r | presses >= 2 && viewHolds (modelView model) r]
+    , [Edit r | presses >= 2 && viewHolds (modelView model) r]
     )
   -- A column that was dragged wider is already the width it was dragged to, so
   -- this is written down rather than drawn.  The layout is worth saving.
@@ -174,7 +174,7 @@ keyDown keyval model
   | keyval == Gdk.KEY_Tab = moveActive 0 1
   | keyval == Gdk.KEY_ISO_Left_Tab = moveActive 0 (-1)
   | keyval == Gdk.KEY_Return || keyval == Gdk.KEY_KP_Enter =
-      (model, [Open (modelActive model)])
+      (model, [Edit (modelActive model)])
   | keyval == Gdk.KEY_Delete || keyval == Gdk.KEY_BackSpace =
       (model, [Ask (Clear (modelActive model))])
   | otherwise = (model, [])

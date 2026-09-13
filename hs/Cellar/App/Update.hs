@@ -26,6 +26,9 @@ module Cellar.App.Update
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad (forM, forM_, unless, void, when)
 import Data.List (sortOn)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NE
+import Data.Traversable (mapAccumL)
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import System.Directory
@@ -248,27 +251,26 @@ update env state = \case
   -- Opening, making and copying workbooks
   --
 
-  WorkbookRead open how sheets showing ->
-    let loaded = (foldl (addSheetTab) (emptied open state) sheets)
-          { statePage = SheetPage
-          , stateLoading = False
-          , stateFresh = False
-          , stateScratch = case how of
-              AsUsual -> False
-              AsScratch -> True
-              AsBefore -> stateScratch state
-          }
-        chosen = case [ tabId t | t <- stateTabs loaded
-                      , Just (tabName t) == showing ] ++ map tabId (stateTabs loaded) of
-                   (first : _) -> loaded { stateCurrent = Just first }
-                   [] -> loaded
-    in after chosen $ do
-         asking env [ ("open", openArguments (tabName t) sheet
-                      , Opened (tabId t) (stateFresh state))
-                    | (t, sheet) <- zip (stateTabs chosen) (map snd sheets) ]
-         watchAgain env open
-         when (how == AsUsual) (post env (Remembered (workbookRoot open)))
-         focusGrid env chosen
+  -- A workbook with no sheets in it is not a workbook the window can show, so
+  -- it is refused here rather than carried as a state nothing else allows for.
+  WorkbookRead open how sheets showing -> case NE.nonEmpty sheets of
+    Nothing -> after state (notify env (T.pack (workbookName open ++ " has no sheets")))
+    Just some ->
+      let (counted, tabs) = makeTabs some state
+          scratch = case how of
+            AsUsual -> False
+            AsScratch -> True
+            AsBefore -> maybe False openScratch (stateOpen state)
+          loaded = (opened open tabs showing scratch counted)
+            { statePage = SheetPage, stateLoading = False, stateFresh = False
+            , stateCloseAnswer = Nothing }
+      in after loaded $ do
+           asking env [ ("open", openArguments (tabName t) sheet
+                        , Opened (tabId t) (stateFresh state))
+                      | (t, sheet) <- zip (NE.toList tabs) (map snd sheets) ]
+           watchAgain env open
+           when (how == AsUsual) (post env (Remembered (workbookRoot open)))
+           focusGrid env loaded
 
   SheetsRead sheets showing -> case stateWorkbook state of
     Nothing -> stay state
@@ -326,15 +328,15 @@ update env state = \case
     _ -> stay state
 
   SheetAdded open name ->
-    let (grown, tab) = addTab name (emptyView defaultRows defaultColumns)
-                                   state { stateWorkbook = Just open }
-    in after grown { stateCurrent = Just (tabId tab) } $ do
+    let (counted, tab) = freshTab name (emptyView defaultRows defaultColumns) state
+        grown = addTab tab (withWorkbook open counted)
+    in after grown $ do
          asking env [("open", openArguments name emptySheet, Opened (tabId tab) True)]
          watchAgain env open
          notify env (T.pack ("Added " ++ name))
 
   SheetRenamed open tab old new ->
-    after (withTab tab (\t -> t { tabName = new }) state { stateWorkbook = Just open }) $ do
+    after (withTab tab (\t -> t { tabName = new }) (withWorkbook open state)) $ do
       -- Cells elsewhere say Summary!B2, so a sheet that changes its name
       -- changes what every one of them has to say.  The kernel rewrites them
       -- and hands back the sources of every sheet it touched.
@@ -366,7 +368,7 @@ update env state = \case
 
 carryOut :: Env -> State -> TabId -> GridOut -> IO ()
 carryOut env state tab = \case
-  Open r -> forM_ (tabById tab state) $ \found ->
+  Edit r -> forM_ (tabById tab state) $ \found ->
     openEditor env tab (tabName found) r (lookup (refName r) (tabSources found))
   Ask Layout -> saveTab env state tab
   Ask (Clear r) -> forM_ (tabById tab state) $ \found ->
@@ -463,10 +465,8 @@ snapshotInto tab payload state = repainted
                     (statePalette taken) (stateTabs taken)
     repainted
       | palette == statePalette taken = taken
-      | otherwise = taken
-          { statePalette = palette
-          , stateTabs = [ t { tabGrid = withPalette palette (tabGrid t) }
-                        | t <- stateTabs taken ] }
+      | otherwise = withTabs (\t -> t { tabGrid = withPalette palette (tabGrid t) })
+                             taken { statePalette = palette }
     into which answer s = withTab which (\t ->
       let sources = maybe (tabSources t) readSources (lookupKey "sources" answer)
       in t { tabSources = sources
@@ -682,7 +682,7 @@ acting env state = \case
     suggestion = case (stateWorkbook state, stateScratch state) of
       (Just open, False) -> workbookName open
       _ -> "workbook"
-    stepping delta = case (stateCurrent state >>= \t -> tabPosition t state) of
+    stepping delta = case (currentTab state >>= \t -> tabPosition (tabId t) state) of
       Nothing -> stay state
       Just position ->
         let next = position + delta
@@ -714,7 +714,7 @@ editing :: Env -> State -> Transition State Event
 editing env state = case currentTab state of
   Nothing -> stay state
   Just tab -> after state $
-    carryOut env state (tabId tab) (Open (modelActive (tabGrid tab)))
+    carryOut env state (tabId tab) (Edit (modelActive (tabGrid tab)))
 
 recalculating :: Env -> State -> Transition State Event
 recalculating env state = case currentTab state of
@@ -728,23 +728,18 @@ keeping :: TabId -> State -> State
 keeping tab state =
   state { stateCloseAnswer = Just (T.pack (show tab), False) }
 
-emptied :: Workbook -> State -> State
-emptied open state = state
-  { stateWorkbook = Just open
-  , stateTabs = []
-  , stateCurrent = Nothing
-  , stateLoading = True
-  , stateCloseAnswer = Nothing
-  }
-
-addSheetTab :: State -> (String, Sheet) -> State
-addSheetTab state (name, sheet) =
-  let (grown, tab) = addTab name (emptyView (max defaultRows (sheetRows sheet))
-                                            (max defaultColumns (sheetColumns sheet)))
-                                 state
-  in withTab (tabId tab) (\t -> t { tabSources = sheetCells sheet
-                                  , tabGrid = withWidths (sheetWidths sheet) (tabGrid t) })
-             grown
+-- | A sheet of the window for every sheet on disk, each holding what its
+-- folder said.
+makeTabs :: NonEmpty (String, Sheet) -> State -> (State, NonEmpty Tab)
+makeTabs sheets state = mapAccumL one state sheets
+  where
+    one s (name, sheet) =
+      let (next, tab) = freshTab name (emptyView (max defaultRows (sheetRows sheet))
+                                                 (max defaultColumns (sheetColumns sheet)))
+                                 s
+      in ( next
+         , tab { tabSources = sheetCells sheet
+               , tabGrid = withWidths (sheetWidths sheet) (tabGrid tab) } )
 
 focusGrid :: Env -> State -> IO ()
 focusGrid _ _ = pure ()

@@ -26,6 +26,8 @@ import qualified GI.Gdk as Gdk
 
 import Cellar.Client
 import Cellar.Config
+import Data.List.NonEmpty (NonEmpty ((:|)))
+
 import Cellar.App.State
 import Cellar.External
 import Cellar.Grid.Model
@@ -222,7 +224,7 @@ main = do
   check failures "Delete asks for the active cell to be cleared"
     [Ask (Clear (Ref 0 0))] (snd (pressKey Gdk.KEY_Delete start))
   check failures "Enter opens the editor on it"
-    [Open (Ref 0 0)] (snd (pressKey Gdk.KEY_Return start))
+    [Edit (Ref 0 0)] (snd (pressKey Gdk.KEY_Return start))
   check failures "a key the grid does not answer changes nothing"
     [] (snd (pressKey Gdk.KEY_F1 start))
   check failures "and the grid says which keys it answers"
@@ -233,7 +235,7 @@ main = do
   check failures "and asks for nothing"
     [] (snd (gridEvent (Pressed (Ref 2 1) 1) start))
   check failures "a second click opens the editor"
-    [Open (Ref 2 1)] (snd (gridEvent (Pressed (Ref 2 1) 2) start))
+    [Edit (Ref 2 1)] (snd (gridEvent (Pressed (Ref 2 1) 2) start))
   check failures "a click past the edge of the sheet selects nothing"
     (Ref 0 0) (modelActive (fst (gridEvent (Pressed (Ref 99 1) 1) start)))
 
@@ -343,8 +345,10 @@ main = do
   -- what the kernel owes an answer for.
   section "the window's state"
   let blank = newState defaultConfig "/home/nobody"
-      (oneSheet, first') = addTab "Summary" (emptyView 10 4) blank
-      (twoSheets, second') = addTab "Q1" (emptyView 10 4) oneSheet
+      here = Workbook "/home/nobody/book.cellar" SheetsUnder
+      (counted, first') = freshTab "Summary" (emptyView 10 4) blank
+      (counted', second') = freshTab "Q1" (emptyView 10 4) counted
+      twoSheets = addTab second' (opened here (first' :| []) Nothing False counted')
       showing = selectTab (tabId first') twoSheets
   check failures "a new window has no workbook and no sheets"
     (False, []) (isJust (stateWorkbook blank), tabOrder blank)
@@ -352,7 +356,7 @@ main = do
   check failures "with nothing to say in the title"
     "No workbook open" (T.unpack (subtitleOf blank))
   check failures "a scratch workbook says so instead"
-    "Scratch" (T.unpack (subtitleOf blank { stateScratch = True }))
+    "Scratch" (T.unpack (subtitleOf (opened here (first' :| []) Nothing True counted)))
   check failures "sheets are added in order" ["Summary", "Q1"] (tabOrder twoSheets)
   check failures "and each gets a name of its own"
     True (tabId first' /= tabId second')
