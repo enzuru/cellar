@@ -1,3 +1,5 @@
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -17,7 +19,7 @@
 module Cellar.Grid.Model
   ( -- * The model
     GridModel (..)
-  , ColumnId
+  , ColumnId (..)
   , newGridModel
     -- * What the grid asks for
   , Command (..)
@@ -81,13 +83,19 @@ data GridOut
   | Open Ref               -- ^ Open the editor on this cell.
   deriving (Eq, Show)
 
+-- | What number a column's name is, for handing out the next one.  Nothing
+-- else has any business doing arithmetic on one.
+number :: ColumnId -> Int
+number (ColumnId n) = n
+
 -- | A column's name to itself, handed out once and never reused.
 --
 -- The letters along the top are positions, and an insert moves every letter to
 -- its right along; the identifier underneath does not move.  That is what lets
 -- the library keep a column's widget, and its width, when a column is inserted
 -- to the left of it -- it matches one render against the next by this.
-type ColumnId = Int
+newtype ColumnId = ColumnId Int
+  deriving newtype (Eq, Ord, Show)
 
 -- | Everything the grid draws, in one value.
 data GridModel = GridModel
@@ -117,8 +125,8 @@ newGridModel :: View -> GridModel
 newGridModel view = GridModel
   { modelView = view
   , modelRows = viewRows view
-  , modelColumns = [0 .. viewColumns view - 1]
-  , modelNextColumn = viewColumns view
+  , modelColumns = map ColumnId [0 .. viewColumns view - 1]
+  , modelNextColumn = ColumnId (viewColumns view)
   , modelActive = Ref 0 0
   , modelWidths = M.empty
   , modelPalette = M.empty
@@ -209,11 +217,12 @@ withView view model = model
   { modelView = view
   , modelRows = max (modelRows model) (viewRows view)
   , modelColumns = modelColumns model ++ fresh
-  , modelNextColumn = modelNextColumn model + length fresh
+  , modelNextColumn = ColumnId (number (modelNextColumn model) + length fresh)
   }
   where
-    fresh = take (viewColumns view - length (modelColumns model))
-                 [modelNextColumn model ..]
+    fresh = [ ColumnId n
+            | n <- take (viewColumns view - length (modelColumns model))
+                        [number (modelNextColumn model) ..] ]
 
 -- | Put the active cell somewhere.  'Nothing' when that is not a cell of this
 -- sheet, which is what a click on a column that the kernel has not caught up
@@ -310,8 +319,8 @@ insertLine axis at model
               Column ->
                 let (toTheLeft, toTheRight) = splitAt at (modelColumns model)
                 in toTheLeft ++ [modelNextColumn model] ++ toTheRight
-          , modelNextColumn = modelNextColumn model
-              + (case axis of { Row -> 0; Column -> 1 })
+          , modelNextColumn = ColumnId (number (modelNextColumn model)
+              + (case axis of { Row -> 0; Column -> 1 }))
           , modelActive = moved
           }
       , Insert axis at

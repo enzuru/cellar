@@ -97,8 +97,8 @@ data Env = Env
     -- the answer can arrive, and only something holding a reference can do
     -- that: the update changes the state by handing an event back, which is
     -- one turn of the loop too late.
-  , envTags :: IORef (M.Map Int Tag)
-  , envPreviews :: IORef (M.Map Int (Sexp -> IO ()))
+  , envTags :: IORef (M.Map RequestId Tag)
+  , envPreviews :: IORef (M.Map RequestId (Sexp -> IO ()))
     -- | The submenu of workbooks opened lately, which Cellar fills in because
     -- its length is not known until the preferences are read.
   , envRecentSection :: Gio.Menu
@@ -167,7 +167,7 @@ asking env wanted = forM_ wanted $ \(op, arguments, tag) -> do
 -- | What a request was for, forgetting it on the way out.  A number nobody
 -- wrote anything down for is 'Ignored', which is what an answer to something
 -- abandoned when the kernel restarted looks like.
-tagOf :: Env -> Int -> IO Tag
+tagOf :: Env -> RequestId -> IO Tag
 tagOf env requestId = atomicModifyIORef' (envTags env) $ \tags ->
   (M.delete requestId tags, fromMaybe Ignored (M.lookup requestId tags))
 
@@ -447,7 +447,7 @@ previewOf payload = Preview
 
 -- | Hand an answer to the editor, if the editor is what asked.  Answers with
 -- whether it was.
-answerEditor :: Env -> Int -> Sexp -> IO Bool
+answerEditor :: Env -> RequestId -> Sexp -> IO Bool
 answerEditor env requestId payload = do
   found <- atomicModifyIORef' (envPreviews env) $ \waiting ->
     (M.delete requestId waiting, M.lookup requestId waiting)

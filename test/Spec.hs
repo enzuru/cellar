@@ -260,7 +260,7 @@ main = do
       -- The new column takes the position; every other column keeps the name
       -- it had, which is what its width and its widget hang on.
       check failures "the new column goes in under a name of its own"
-        [0, 4, 1, 2, 3] (modelColumns grown)
+        (map ColumnId [0, 4, 1, 2, 3]) (modelColumns grown)
       check failures "and no two columns share a name"
         5 (length (nub (modelColumns grown)))
   case insertLine Row 0 (fst (pressKey Gdk.KEY_Down start)) of
@@ -286,16 +286,16 @@ main = do
   check failures "and forgotten when it ends"
     Nothing (modelDrag (withDrag Nothing (withDrag (Just (Row, 0, 1)) start)))
   check failures "a column reports where it is"
-    (Just 2) (positionOfColumn 2 start)
+    (Just 2) (positionOfColumn (ColumnId 2) start)
   check failures "and a column that is not there reports nothing"
-    Nothing (positionOfColumn 99 start)
+    Nothing (positionOfColumn (ColumnId 99) start)
   check failures "a resize is written down and asks for the layout to be saved"
     (Just 180, [Ask Layout])
-    (let (resized, out) = gridEvent (Resized 2 180) start
-     in (lookup 2 [ (c, w) | (p, w) <- columnWidths resized
+    (let (resized, out) = gridEvent (Resized (ColumnId 2) 180) start
+     in (lookup (ColumnId 2) [ (c, w) | (p, w) <- columnWidths resized
                    , Just c <- [lookup p (zip [0 ..] (modelColumns resized))] ], out))
   check failures "the default width is not worth writing down"
-    [] (columnWidths (fst (gridEvent (Resized 0 104) start)))
+    [] (columnWidths (fst (gridEvent (Resized (ColumnId 0) 104) start)))
   check failures "Tab moves right and Shift+Tab moves back"
     (Ref 0 1, Ref 0 0)
     ( modelActive (fst (pressKey Gdk.KEY_Tab start))
@@ -310,7 +310,7 @@ main = do
   check failures "a view with more columns brings them with it"
     6 (length (modelColumns (withView (emptyView 10 6) start)))
   check failures "and they are named after the ones already there"
-    [0, 1, 2, 3, 4, 5] (modelColumns (withView (emptyView 10 6) start))
+    (map ColumnId [0, 1, 2, 3, 4, 5]) (modelColumns (withView (emptyView 10 6) start))
 
   -- A cell can ask to be drawn in any colour it likes, and GTK has no way to
   -- set one on a widget except through the stylesheet, so each pair of colours
@@ -735,7 +735,7 @@ runKernelTests failures = do
       let sheet = "Sheet 1"
       -- The client answers by number, so the test keeps its own note of what
       -- each number was for, which is what the shell does with it as well.
-      asked <- newIORef (M.empty :: M.Map Int String)
+      asked <- newIORef (M.empty :: M.Map RequestId String)
       let remember key value = modifyIORef' answers ((key, value) :)
           ask op arguments' key = do
             requestId <- call kernel op arguments'

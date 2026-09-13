@@ -268,6 +268,9 @@ sheet env tab = TV.Tab
 keyOf :: TabId -> Text
 keyOf = T.pack . show
 
+-- | The sheet a key stands for.  The keys are Cellar's own, written by
+-- 'keyOf', so one always reads; a key that does not is answered with a name no
+-- sheet has, and every handler passes over it.
 readKey :: Text -> TabId
-readKey key = fromMaybe (-1) (readMaybe (T.unpack key))
+readKey key = TabId (fromMaybe 0 (readMaybe (T.unpack key)))
   where readMaybe text = case reads text of { [(n, "")] -> Just n; _ -> Nothing }

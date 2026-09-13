@@ -1,3 +1,5 @@
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | The whole of the window, as one value.
@@ -16,7 +18,7 @@ module Cellar.App.State
     State (..)
   , Page (..)
   , Tab (..)
-  , TabId
+  , TabId (..)
   , newState
     -- * Asking after it
   , currentTab
@@ -59,7 +61,8 @@ data Page = StartPage | SheetPage
 -- an ordinary thing to do, and a name that is being changed is no use for
 -- saying which sheet is meant.  The kernel is told the name, because that is
 -- what cells use.
-type TabId = Int
+newtype TabId = TabId Int
+  deriving newtype (Eq, Ord, Show)
 
 -- | A sheet of the workbook, as the window holds it.
 data Tab = Tab
@@ -140,7 +143,7 @@ newState config home = State
   , stateScratch = False
   , stateTabs = []
   , stateCurrent = Nothing
-  , stateNextTab = 1
+  , stateNextTab = TabId 1
   , statePage = StartPage
   , stateRecent = recentWorkbooks config
   , stateConfig = config
@@ -205,6 +208,10 @@ withCurrentTab :: (Tab -> Tab) -> State -> State
 withCurrentTab change state =
   maybe state (\t -> withTab (tabId t) change state) (currentTab state)
 
+-- | The name the sheet after this one takes.
+nextAfter :: TabId -> TabId
+nextAfter (TabId n) = TabId (n + 1)
+
 -- | Add a sheet at the end, and say which tab it became.
 addTab :: String -> View -> State -> (State, Tab)
 addTab name view state =
@@ -214,7 +221,7 @@ addTab name view state =
                 , tabGrid = newGridModel view
                 }
   in ( state { stateTabs = stateTabs state ++ [tab]
-             , stateNextTab = stateNextTab state + 1
+             , stateNextTab = nextAfter (stateNextTab state)
              }
      , tab )
 

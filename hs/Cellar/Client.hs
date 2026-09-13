@@ -1,3 +1,6 @@
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 -- | The shell's end of the pipe.
 --
 -- Starts the kernel, sends it requests, and hands each reply to whoever asked
@@ -19,6 +22,7 @@
 -- without a display.
 module Cellar.Client
   ( Kernel
+  , RequestId (..)
   , Reply (..)
   , startKernel
   , kernelAlive
@@ -58,10 +62,19 @@ import Cellar.Sexp
 -- it asked for and why, and this says only what came back.  That is what lets
 -- the answers arrive as events rather than as calls into whatever was in scope
 -- when the question was asked.
+-- | The number a request goes out under, and its answer comes back under.
+newtype RequestId = RequestId Int
+  deriving newtype (Eq, Ord, Show)
+
 data Reply
-  = Answered Int Sexp     -- ^ The reply to this request.
-  | Refused Int String    -- ^ Why this request will not be answered.
+  = Answered RequestId Sexp     -- ^ The reply to this request.
+  | Refused RequestId String    -- ^ Why this request will not be answered.
   deriving (Eq, Show)
+
+-- | The number a request went out under.  Nothing but the wire cares what it
+-- is; everything else only asks whether two of them are the same one.
+number :: RequestId -> Int
+number (RequestId n) = n
 
 -- | A request that has been sent and not yet answered.
 data Pending = Pending
@@ -78,7 +91,7 @@ data Running = Running
 data Kernel = Kernel
   { kernelCommand :: (FilePath, [String])
   , kernelRunning :: IORef (Maybe Running)
-  , kernelPending :: IORef (M.Map Int Pending)
+  , kernelPending :: IORef (M.Map RequestId Pending)
   , kernelNextId :: IORef Int
     -- | Whole messages the reader thread has taken off the pipe, newest first.
     -- The main loop swaps this out; nothing else touches it.
@@ -220,7 +233,7 @@ ignore action = do
 -- kernel that is not running is not an error here: the request is refused, and
 -- the refusal arrives the same way an answer would, so the caller has one
 -- place to hear about it rather than two.
-call :: Kernel -> String -> [Sexp] -> IO Int
+call :: Kernel -> String -> [Sexp] -> IO RequestId
 call kernel op arguments = do
   requestId <- reserve kernel
   sendRequest kernel requestId op arguments
@@ -232,11 +245,12 @@ call kernel op arguments = do
 -- can arrive: the kernel is quick and another thread is reading the pipe, so
 -- an answer can be in hand before a caller that numbered and sent in one step
 -- has had a chance to say what it asked.
-reserve :: Kernel -> IO Int
-reserve kernel = atomicModifyIORef' (kernelNextId kernel) (\n -> (n + 1, n + 1))
+reserve :: Kernel -> IO RequestId
+reserve kernel =
+  atomicModifyIORef' (kernelNextId kernel) (\n -> (n + 1, RequestId (n + 1)))
 
 -- | Send a request that has already been given a number.
-sendRequest :: Kernel -> Int -> String -> [Sexp] -> IO ()
+sendRequest :: Kernel -> RequestId -> String -> [Sexp] -> IO ()
 sendRequest kernel requestId op arguments = do
   running <- readIORef (kernelRunning kernel)
   case running of
@@ -245,7 +259,7 @@ sendRequest kernel requestId op arguments = do
       now <- getMonotonicTime
       atomicModifyIORef' (kernelPending kernel)
         (\m -> (M.insert requestId (Pending now op) m, ()))
-      sent <- try (do B.hPut (runningStdin r) (requestBytes requestId op arguments)
+      sent <- try (do B.hPut (runningStdin r) (requestBytes (number requestId) op arguments)
                       hFlush (runningStdin r))
                 :: IO (Either SomeException ())
       case sent of
@@ -257,7 +271,7 @@ sendRequest kernel requestId op arguments = do
           failEverything kernel "the kernel stopped answering"
 
 -- | Put a refusal in the queue, for a request the kernel will not answer.
-refuse :: Kernel -> Int -> String -> IO ()
+refuse :: Kernel -> RequestId -> String -> IO ()
 refuse kernel requestId why = do
   atomicModifyIORef' (kernelRefused kernel)
     (\queued -> (Refused requestId why : queued, ()))
@@ -280,7 +294,7 @@ waitingFor kernel = do
 waitingOp :: Kernel -> IO (Maybe String)
 waitingOp kernel = fmap pendingOp . oldest <$> readIORef (kernelPending kernel)
 
-oldest :: M.Map Int Pending -> Maybe Pending
+oldest :: M.Map RequestId Pending -> Maybe Pending
 oldest waiting = case M.elems waiting of
   [] -> Nothing
   ps -> Just (foldr1 earlier ps)
@@ -337,8 +351,10 @@ awaitReplies kernel = do
 
 interpret :: Kernel -> Message -> IO [Reply]
 interpret kernel message = case message of
-  Reply requestId payload -> forget requestId (Answered requestId payload)
-  Failed requestId why -> forget requestId (Refused requestId why)
+  Reply requestId payload ->
+    forget (RequestId requestId) (Answered (RequestId requestId) payload)
+  Failed requestId why ->
+    forget (RequestId requestId) (Refused (RequestId requestId) why)
   -- The reader thread's way of saying the pipe ended.
   Garbled "\0end" -> do
     alive <- kernelAlive kernel
