@@ -136,6 +136,22 @@ expect "a column can be dragged more than once" \
   holds "$SHEET/cells/A3.scm" '"first"'
 expect "and its reference came back with it" holds "$SHEET/cells/A1.scm" '"second"'
 
+# One column to the right, and one back to the left.  A column dropped on
+# another takes its place and the ones between shift along, so a move of one is
+# a swap -- and it is where an off-by-one would show if there were one.
+echo "4. dragging a column one place and back"
+drag 118 151 220 151
+settle 30 holds "$SHEET/cells/B3.scm" '"first"'
+expect "a column dropped on the next one takes its place" \
+  holds "$SHEET/cells/B3.scm" '"first"'
+expect "and took the rest of its own column with it" \
+  holds "$SHEET/cells/B1.scm" '"second"'
+
+drag 220 151 118 151
+settle 30 holds "$SHEET/cells/A3.scm" '"first"'
+expect "and the same drag the other way puts it back" \
+  holds "$SHEET/cells/A3.scm" '"first"'
+
 echo
 echo "app log (excluding harmless environment noise):"
 grep -av "libEGL\|DRI3\|dbus-daemon\|atk-bridge\|AT-SPI\|portal\|fusermount\|Registry\|display server" \
