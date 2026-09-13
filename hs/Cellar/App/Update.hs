@@ -384,6 +384,10 @@ carryOut env state tab = \case
     asking env [( "insert"
                 , [Str (tabName found), Sym (axisName axis), Num (fromIntegral at)]
                 , Snapshot tab Nothing )]
+  Ask (Delete axis at) -> forM_ (tabById tab state) $ \found ->
+    asking env [( "delete"
+                , [Str (tabName found), Sym (axisName axis), Num (fromIntegral at)]
+                , Snapshot tab Nothing )]
 
 dragOf :: TabId -> State -> Maybe (Axis, Int, Int)
 dragOf tab state = tabById tab state >>= modelDrag . tabGrid
@@ -658,6 +662,18 @@ acting env state = \case
          Just (model, command) ->
            let grown = withTab (tabId tab) (\t -> t { tabGrid = model }) state
            in after grown (carryOut env grown (tabId tab) (Ask command))
+
+  DeleteLine axis -> onSheet $ withSheet $ \tab ->
+    let at = case axis of
+          Row -> refRow (activeOf tab)
+          Column -> refColumn (activeOf tab)
+    in case deleteLine axis at (tabGrid tab) of
+         Nothing -> after state $ notify env $ case axis of
+           Row -> "A sheet has to keep one row"
+           Column -> "A sheet has to keep one column"
+         Just (model, command) ->
+           let shrunk = withTab (tabId tab) (\t -> t { tabGrid = model }) state
+           in after shrunk (carryOut env shrunk (tabId tab) (Ask command))
 
   OpenRecentAt path -> Transition state (opening path AsUsual)
 

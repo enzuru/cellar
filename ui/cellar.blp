@@ -100,6 +100,16 @@ menu primary_menu {
       label: _("Insert Column A_fter");
       action: "app.insert-column-after";
     }
+
+    item {
+      label: _("_Delete Row");
+      action: "app.delete-row";
+    }
+
+    item {
+      label: _("Delete Colu_mn");
+      action: "app.delete-column";
+    }
   }
 
   section {
@@ -161,6 +171,18 @@ menu line_menu {
     item {
       label: _("Insert Column After");
       action: "app.insert-column-after";
+    }
+  }
+
+  section {
+    item {
+      label: _("Delete Row");
+      action: "app.delete-row";
+    }
+
+    item {
+      label: _("Delete Column");
+      action: "app.delete-column";
     }
   }
 }

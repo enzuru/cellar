@@ -154,6 +154,17 @@ here would take the window's answers away with it."
          (throw 'cellar-kernel-error "there is no room to insert there"))
        (reply id (with-others kernel s (with-sources s) #t))))
 
+    ;; Deleting takes the cells on the line with it, and leaves every reference
+    ;; that named one saying so, so the sources go back here too.
+    (('delete sheet axis at)
+     (let ((s (sheet-called kernel sheet)))
+       (unless (if (eq? axis 'row)
+                   (delete-row! s at)
+                   (delete-column! s at))
+         (throw 'cellar-kernel-error
+                "there is nothing to delete there, or it is the last one"))
+       (reply id (with-others kernel s (with-sources s) #t))))
+
     (('recalculate sheet)
      (let ((s (sheet-called kernel sheet)))
        (invalidate-sheet! s)

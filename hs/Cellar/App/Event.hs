@@ -36,6 +36,8 @@ data Action
   | OpenCellElsewhere
   | MoveLine Axis Int
   | InsertLine Axis Bool
+    -- | Take away the row or column the active cell is on.
+  | DeleteLine Axis
   | OpenRecentAt FilePath
   | ClearRecent
   | Preferences

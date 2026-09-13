@@ -26,7 +26,11 @@
             shift-index
             ref-after-move
             shift-index-for-insert
-            ref-after-insert))
+            ref-after-insert
+            shift-index-for-delete
+            ref-after-delete
+            shift-index-past-delete
+            ref-past-delete))
 
 (define (make-ref row column) (cons row column))
 (define (ref-row r) (car r))
@@ -110,3 +114,49 @@ between slide over by one."
   (if (eq? axis 'row)
       (make-ref (shift-index-for-insert (ref-row r) at) (ref-column r))
       (make-ref (ref-row r) (shift-index-for-insert (ref-column r) at))))
+
+;; Taking a line away is the one rearrangement with nowhere to send some of
+;; what points at it.  A reference to the line itself has lost the cell it
+;; named, and there are two honest things to do about that, depending on who is
+;; asking.
+;;
+;; A reference written on its own -- the A3 in (+ A3 1) -- is dead, and
+;; shift-index-for-delete says so by answering #f.  Pretending it now means
+;; whatever slid up into row 3 would change what the cell computes without
+;; saying a word.
+;;
+;; A corner of a range is not: A1:A5 with row 3 taken out is a range of four
+;; rows, and a range that lost a corner would be a range nobody can write.  So
+;; shift-index-past-delete carries the line's own index onto whatever took its
+;; place, which shrinks the range from the far end and leaves the near one
+;; alone.
+
+(define (shift-index-for-delete i at)
+  "Where index I lands when the line at AT is taken away, or #f when I is that
+line and so is nowhere."
+  (cond ((= i at) #f)
+        ((> i at) (- i 1))
+        (else i)))
+
+(define (ref-after-delete r axis at)
+  "Where reference R lands when the line at AT along AXIS is taken away, or #f
+when R was on it."
+  (let ((moved (shift-index-for-delete
+                (if (eq? axis 'row) (ref-row r) (ref-column r))
+                at)))
+    (and moved
+         (if (eq? axis 'row)
+             (make-ref moved (ref-column r))
+             (make-ref (ref-row r) moved)))))
+
+(define (shift-index-past-delete i at)
+  "Where index I lands when the line at AT is taken away and I is to follow
+whatever took its place rather than die with it."
+  (if (> i at) (- i 1) i))
+
+(define (ref-past-delete r axis at)
+  "Where reference R lands when the line at AT along AXIS is taken away, with a
+reference to the line itself following whatever took its place."
+  (if (eq? axis 'row)
+      (make-ref (shift-index-past-delete (ref-row r) at) (ref-column r))
+      (make-ref (ref-row r) (shift-index-past-delete (ref-column r) at))))

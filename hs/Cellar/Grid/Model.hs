@@ -40,6 +40,7 @@ module Cellar.Grid.Model
   , selectLine
   , moveLine
   , insertLine
+  , deleteLine
   , moveItem
   , scrollTo
   , positionOfColumn
@@ -77,6 +78,7 @@ data Command
   | Clear Ref              -- ^ Delete was pressed on a cell.
   | Move Axis Int Int      -- ^ A row or column should move.
   | Insert Axis Int        -- ^ A row or column should be opened.
+  | Delete Axis Int        -- ^ A row or column should be taken away.
   deriving (Eq, Show)
 
 -- | What the grid wants done, which is not always about the sheet.
@@ -332,6 +334,42 @@ insertLine axis at model
     limit = case axis of
       Row -> viewRows (modelView model)
       Column -> viewColumns (modelView model)
+
+-- | Ask for a row or column to be taken away.  The active cell stays at the
+-- same index, which is the cell that slid into its place; on the last line of
+-- the sheet it steps back, since there is no such index any more.
+--
+-- The last line cannot go.  A sheet of no columns has no cells and nothing to
+-- draw, and the kernel refuses it as well, so this refuses it where the person
+-- who pressed the key can be told about it.
+deleteLine :: Axis -> Int -> GridModel -> Maybe (GridModel, Command)
+deleteLine axis at model
+  | at < 0 || at >= limit || limit <= 1 = Nothing
+  | otherwise = Just
+      ( scrollTo (refRow active) model
+          { modelRows = case axis of
+              Row -> max 1 (modelRows model - 1)
+              Column -> modelRows model
+          , modelColumns = case axis of
+              Row -> modelColumns model
+              Column -> take at columns ++ drop (at + 1) columns
+          , modelActive = active
+          }
+      , Delete axis at
+      )
+  where
+    columns = modelColumns model
+    limit = case axis of
+      Row -> viewRows (modelView model)
+      Column -> viewColumns (modelView model)
+    -- Past the delete rather than through it, and then back inside the sheet
+    -- that is left: the cell the cursor was on may have been the last line.
+    active = case axis of
+      Row -> Ref (clamped (refRow was)) (refColumn was)
+      Column -> Ref (refRow was) (clamped (refColumn was))
+      where
+        was = refPastDelete (modelActive model) axis at
+        clamped i = max 0 (min i (limit - 2))
 
 moveItem :: Int -> Int -> [a] -> [a]
 moveItem from to xs

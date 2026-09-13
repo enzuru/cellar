@@ -254,6 +254,102 @@
          "(sum (range 'A2 'A5))" (src "B7"))
   (check "with its total intact" "16" (shown-in "B7")))
 
+(format #t "-- deleting rows and columns~%")
+
+;; Taking a line away is inserting one backwards, except for what pointed at
+;; it.  Those references have lost the cell they named, and the point of the
+;; test is that they say so rather than quietly meaning the cell that slid up.
+(let ((r (make-sheet 4 3)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (src name) (cell-source r (name->ref name)))
+  (define (shown-in name) (cell-display r (name->ref name)))
+  (put! "A1" "1")
+  (put! "A2" "2")
+  (put! "A3" "3")
+  (put! "C1" "(* A3 10)")
+  (put! "C2" "(* A2 10)")
+
+  (check "delete-row! reports the delete" #t (delete-row! r 1))
+  (check "the sheet is a row shorter" 3 (sheet-rows r))
+  (check "the rows above it stay put" "1" (src "A1"))
+  (check "the rows below it moved up" "3" (src "A2"))
+  (check "nothing is left at the old bottom" #f (src "A3"))
+  (check "references to what moved follow it" "(* A2 10)" (src "C1"))
+  (check "so the value is unchanged" "30" (shown-in "C1"))
+  (check "a cell on the deleted row goes with it" #f (src "C2")))
+
+;; A reference to the deleted line itself, and the cell that holds it.
+(let ((r (make-sheet 4 3)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (src name) (cell-source r (name->ref name)))
+  (define (shown-in name) (cell-display r (name->ref name)))
+  (put! "A2" "7")
+  (put! "C1" "(+ A2 1)")
+  (check "the cell reads the row before it is deleted" "8" (shown-in "C1"))
+
+  (delete-row! r 1)
+  (check "a reference to the deleted row is written as a dead one"
+         "(+ %deleted 1)" (src "C1"))
+  (check "and the cell says so rather than computing something else"
+         "this cell refers to a cell that was deleted"
+         (cell-error-message (cell-value r (name->ref "C1"))))
+  (check "which is an error, not a value"
+         #t (cell-error? (cell-value r (name->ref "C1")))))
+
+;; A range is a rectangle and stays one: a line taken out of it shrinks it
+;; rather than leaving it with a corner that names nothing.
+(let ((r (make-sheet 6 2)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (src name) (cell-source r (name->ref name)))
+  (define (shown-in name) (cell-display r (name->ref name)))
+  (put! "A1" "1")
+  (put! "A2" "2")
+  (put! "A3" "3")
+  (put! "A4" "4")
+  (put! "B6" "(sum (range 'A1 'A4))")
+  (check "the range sums four cells to begin with" "10" (shown-in "B6"))
+
+  (delete-row! r 1)
+  (check "a row taken out of a range shrinks it"
+         "(sum (range 'A1 'A3))" (src "B5"))
+  (check "and the total is what is left" "8" (shown-in "B5"))
+
+  (delete-row! r 3)
+  (check "a row taken out below a range leaves it alone"
+         "(sum (range 'A1 'A3))" (src "B4")))
+
+;; Columns work the same way, and the last line of a sheet cannot go.
+(let ((r (make-sheet 3 3)))
+  (define (put! name text) (set-cell-source! r (name->ref name) text))
+  (define (src name) (cell-source r (name->ref name)))
+  (put! "A1" "1")
+  (put! "B1" "2")
+  (put! "C1" "(+ A1 B1)")
+
+  (check "delete-column! reports the delete" #t (delete-column! r 0))
+  (check "the sheet is a column narrower" 2 (sheet-columns r))
+  (check "the columns to the right moved over" "2" (src "A1"))
+  (check "and the reference to the deleted one is dead"
+         "(+ %deleted A1)" (src "B1"))
+
+  (check "a column past the end is refused" #f (delete-column! r 5))
+  (check "a negative one is refused" #f (delete-column! r -1))
+  (check "the sheet is untouched by a refused delete" 2 (sheet-columns r))
+  (check "the second-to-last column can still go" #t (delete-column! r 0))
+  (check "but the last one cannot" #f (delete-column! r 0))
+  (check "so a sheet always has a column" 1 (sheet-columns r)))
+
+;; A deleted reference is refused wherever it is written, including inside a
+;; quote, where the evaluator does not otherwise look.
+(let ((r (make-sheet 3 3)))
+  (set-cell-source! r (name->ref "B1") "(cell 'A2)")
+  (delete-row! r 1)
+  (check "a deleted reference inside a call is dead too"
+         "(cell '%deleted)" (cell-source r (name->ref "B1")))
+  (check "and the call is not made"
+         "this cell refers to a cell that was deleted"
+         (cell-error-message (cell-value r (name->ref "B1")))))
+
 ;; The sheet grows to fit what is read into it, so an inserted row survives a
 ;; save and a load.
 (let ((r (make-sheet 4 2)))

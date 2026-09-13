@@ -29,7 +29,9 @@
                name->ref
                column->name
                ref-after-move
-               ref-after-insert)
+               ref-after-insert
+               ref-after-delete
+               ref-past-delete)
   #:export (make-book
             book?
             book-sheet
@@ -56,6 +58,9 @@
             move-column!
             insert-row!
             insert-column!
+            delete-row!
+            delete-column!
+            deleted-reference-name
             grow-sheet!
             sheet-refs
             sheet->alist
@@ -428,18 +433,28 @@ changed, or #f when the move is a no-op or out of range."
 (define (relocate-cells! sheet relocate)
   "Move every cell of SHEET to where RELOCATE says it goes.  The whole new
 table is built before the old one is touched, since the permutation maps cells
-onto keys that are still in use."
+onto keys that are still in use.
+
+A cell RELOCATE sends to #f is taken away, which is what a delete does to the
+line it deletes."
   (let* ((sources (sheet-sources sheet))
-         (moved (hash-map->list (lambda (r text) (cons (relocate r) text))
-                                sources)))
+         (moved (filter car
+                        (hash-map->list (lambda (r text) (cons (relocate r) text))
+                                        sources))))
     (hash-clear! sources)
     (for-each (lambda (entry) (hash-set! sources (car entry) (cdr entry)))
               moved)))
 
-(define (rewrite-book! target relocate whole-range?)
+(define* (rewrite-book! target relocate whole-range? #:optional (corner relocate))
   "Rewrite every reference to a cell of sheet TARGET, wherever in the book it
 is written, through RELOCATE.  WHOLE-RANGE? is asked about the corners of each
-literal range on TARGET, and answers whether the range keeps its extent."
+literal range on TARGET, and answers whether the range keeps its extent.
+
+RELOCATE may answer #f for a reference whose cell is no longer anywhere, and
+the reference is then written out as a dead one.  CORNER is the relocation the
+corners of a literal range go through, which is RELOCATE unless the caller has
+a reason for the two to differ; a delete has one, since a range that lost a
+corner would be a range nobody can write."
   (let ((moved (sheet-name target)))
     (for-each
      (lambda (s)
@@ -450,10 +465,11 @@ literal range on TARGET, and answers whether the range keeps its extent."
             (let ((relocate-written
                    (lambda (written)
                      (if (equal? (written-sheet written home) moved)
-                         (cons (car written) (relocate (cdr written)))
+                         (let ((there (relocate (cdr written))))
+                           (and there (cons (car written) there)))
                          written))))
               (rewrite-refs text relocate-written
-                            (explicit-spans text home moved relocate
+                            (explicit-spans text home moved relocate corner
                                             whole-range?)))))))
      (book-sheet-list (sheet-book target)))))
 
@@ -524,11 +540,23 @@ other token ends at the first delimiter."
             j
             (scan (+ j 1))))))
 
+;; What a reference is rewritten to when the line it named has been deleted.
+;;
+;; A spreadsheet writes #REF! here.  Cellar's cells are Scheme, so it has to be
+;; something the reader takes and the evaluator can be taught about, and a name
+;; beginning with % is the shape the rest of Cellar's own bindings have.  The
+;; sandbox refuses any expression that mentions it, so a cell that lost a
+;; reference says so instead of quietly computing something else.
+(define deleted-reference-name "%deleted")
+(define %deleted-symbol (string->symbol deleted-reference-name))
+
 (define (rewrite-token token relocate)
   (let ((written (written-reference token)))
     (if written
         (let ((moved (relocate written)))
-          (reference-token (car moved) (cdr moved)))
+          (if moved
+              (reference-token (car moved) (cdr moved))
+              deleted-reference-name))
         token)))
 
 
@@ -574,7 +602,7 @@ other token ends at the first delimiter."
 (define (span m group replacement)
   (cons* (match:start m group) (match:end m group) replacement))
 
-(define (explicit-spans text home moved relocate whole-range?)
+(define (explicit-spans text home moved relocate corner whole-range?)
   "The regions of TEXT the token pass must not decide for itself, each as
 (start end . replacement).  HOME is the sheet TEXT lives on and MOVED the sheet
 whose cells have moved."
@@ -586,19 +614,20 @@ whose cells have moved."
         (if (or (not written) (car written))
             '()
             (list (span m 2 (if (equal? named moved)
-                                (ref->name (relocate (cdr written)))
+                                (let ((there (relocate (cdr written))))
+                                  (if there (ref->name there) deleted-reference-name))
                                 (match:substring m 2)))))))
     (matches %named-cell-call text))
    (append-map
     (lambda (m)
-      (range-spans m 2 3 (match:substring m 1) moved relocate whole-range?))
+      (range-spans m 2 3 (match:substring m 1) moved corner whole-range?))
     (matches %named-range-call text))
    (append-map
     (lambda (m)
       (let ((a (written-reference (match:substring m 1)))
             (b (written-reference (match:substring m 2))))
         (if (and a b (equal? (written-sheet a home) (written-sheet b home)))
-            (range-spans m 1 2 (written-sheet a home) moved relocate whole-range?)
+            (range-spans m 1 2 (written-sheet a home) moved corner whole-range?)
             '())))
     (matches %range-call text))))
 
@@ -654,6 +683,47 @@ range."
            (if (eq? axis 'row)
                (set-sheet-rows! sheet (+ limit 1))
                (set-sheet-columns! sheet (+ limit 1)))
+           (invalidate-sheet! sheet)
+           #t))))
+
+
+;;;
+;;; Deleting
+;;;
+
+;; Taking a line away is inserting one backwards, with one difference that is
+;; the whole of the work: the cells on the line go, and so does every reference
+;; to them.  There is nowhere to send those.  A reference written on its own
+;; becomes %deleted, which the evaluator refuses; a corner of a literal range
+;; follows whatever took the line's place, so that A1:A5 with row 3 taken out
+;; is the four rows that are left rather than a range with a hole in it.
+;;
+;; The last line of a sheet cannot go.  A sheet of no rows is not a sheet, and
+;; the window would have nothing to draw.
+
+(define (delete-row! sheet at)
+  "Take away row AT, 0-based, pulling the rows below it up and shrinking the
+sheet by one.  Returns #t when the sheet changed, #f when AT is out of range or
+is the only row."
+  (delete-line! sheet 'row at))
+
+(define (delete-column! sheet at)
+  "Take away column AT, 0-based, pulling the columns to its right left and
+shrinking the sheet by one.  Returns #t when the sheet changed, #f when AT is
+out of range or is the only column."
+  (delete-line! sheet 'column at))
+
+(define (delete-line! sheet axis at)
+  "The common core of delete-row! and delete-column!."
+  (let ((limit (if (eq? axis 'row) (sheet-rows sheet) (sheet-columns sheet))))
+    (and (integer? at) (>= at 0) (< at limit) (> limit 1)
+         (let ((relocate (lambda (r) (ref-after-delete r axis at)))
+               (corner (lambda (r) (ref-past-delete r axis at))))
+           (relocate-cells! sheet relocate)
+           (rewrite-book! sheet relocate (lambda (a b) #f) corner)
+           (if (eq? axis 'row)
+               (set-sheet-rows! sheet (- limit 1))
+               (set-sheet-columns! sheet (- limit 1)))
            (invalidate-sheet! sheet)
            #t))))
 
@@ -829,7 +899,24 @@ on every frame."
                   `(,(car name+written)
                     (,'%cellar-lookup ',(cadr name+written) ',(cddr name+written))))
                 refs)
+       ;; A cell that names a deleted one is an error before it is anything
+       ;; else, wherever the name appears.  The throw goes in front of the
+       ;; expression rather than behind a binding, so that it fires for a
+       ;; quoted %deleted in (cell '%deleted) as readily as for a bare one, and
+       ;; whether or not the branch it sits in would have been taken.
+       ,@(if (mentions-symbol? datums %deleted-symbol)
+             `((throw 'cellar-error
+                      "this cell refers to a cell that was deleted"))
+             '())
        ,@datums)))
+
+(define (mentions-symbol? form wanted)
+  "Whether WANTED is written anywhere in FORM, quoted or not."
+  (cond ((symbol? form) (eq? form wanted))
+        ((pair? form) (or (mentions-symbol? (car form) wanted)
+                          (mentions-symbol? (cdr form) wanted)))
+        ((vector? form) (mentions-symbol? (vector->list form) wanted))
+        (else #f)))
 
 (define (collect-refs sheet datums)
   "The symbols in DATUMS that name cells, each with the sheet and cell it names.

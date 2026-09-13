@@ -23,6 +23,10 @@ module Cellar.Ref
   , refAfterMove
   , shiftIndexForInsert
   , refAfterInsert
+  , shiftIndexForDelete
+  , refAfterDelete
+  , shiftIndexPastDelete
+  , refPastDelete
   ) where
 
 import Data.Char (isDigit, ord, chr)
@@ -107,3 +111,46 @@ refAfterInsert :: Ref -> Axis -> Int -> Ref
 refAfterInsert (Ref row column) axis at = case axis of
   Row -> Ref (shiftIndexForInsert row at) column
   Column -> Ref row (shiftIndexForInsert column at)
+
+-- Taking a line away is the one rearrangement with nowhere to send some of
+-- what points at it.  A reference to the line itself has lost the cell it
+-- named, and there are two honest things to do about that, depending on who is
+-- asking.
+--
+-- A reference written on its own -- the @A3@ in @(+ A3 1)@ -- is dead, and
+-- 'shiftIndexForDelete' says so by answering 'Nothing'.  Pretending it now
+-- means whatever slid up into row 3 would change what the cell computes
+-- without saying a word.
+--
+-- A corner of a range is not: @A1:A5@ with row 3 taken out is a range of four
+-- rows, and a range that lost a corner would be a range nobody can write.  So
+-- 'shiftIndexPastDelete' carries the line's own index onto whatever took its
+-- place, which shrinks the range from the far end and leaves the near one
+-- alone.  The grid uses it for the active cell, which has to stay somewhere.
+
+-- | Where index @i@ lands when the line at @at@ is taken away, or 'Nothing'
+-- when @i@ is that line and so is nowhere.
+shiftIndexForDelete :: Int -> Int -> Maybe Int
+shiftIndexForDelete i at
+  | i == at = Nothing
+  | i > at = Just (i - 1)
+  | otherwise = Just i
+
+-- | Where a reference lands when a line is taken away along an axis, or
+-- 'Nothing' when it was on it.
+refAfterDelete :: Ref -> Axis -> Int -> Maybe Ref
+refAfterDelete (Ref row column) axis at = case axis of
+  Row -> (\moved -> Ref moved column) <$> shiftIndexForDelete row at
+  Column -> Ref row <$> shiftIndexForDelete column at
+
+-- | Where index @i@ lands when the line at @at@ is taken away and @i@ is to
+-- follow whatever took its place rather than die with it.
+shiftIndexPastDelete :: Int -> Int -> Int
+shiftIndexPastDelete i at = if i > at then i - 1 else i
+
+-- | Where a reference lands when a line is taken away along an axis, with a
+-- reference to the line itself following whatever took its place.
+refPastDelete :: Ref -> Axis -> Int -> Ref
+refPastDelete (Ref row column) axis at = case axis of
+  Row -> Ref (shiftIndexPastDelete row at) column
+  Column -> Ref row (shiftIndexPastDelete column at)

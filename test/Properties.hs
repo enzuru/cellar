@@ -45,6 +45,7 @@ main = do
   held <- checkSequential $ Group "the laws"
     [ ("a reference means the same thing to the kernel", refMatchesTheKernel)
     , ("every reference survives being written and read", refRoundTrips)
+    , ("an insert and the delete of what it opened cancel out", insertIsUndone)
     , ("a move and the move back leave everything where it was", moveIsUndone)
     , ("moving an item rearranges the list and takes nothing out", moveIsAPermutation)
     , ("an s-expression survives being written and read", sexpRoundTrips)
@@ -73,6 +74,10 @@ data Call
   | AfterMoveOf Ref Axis Int Int
   | ShiftForInsertOf Int Int
   | AfterInsertOf Ref Axis Int
+  | ShiftForDeleteOf Int Int
+  | AfterDeleteOf Ref Axis Int
+  | ShiftPastDeleteOf Int Int
+  | PastDeleteOf Ref Axis Int
   deriving (Show)
 
 refMatchesTheKernel :: Property
@@ -107,6 +112,12 @@ inScheme call = case call of
   ShiftForInsertOf i at -> unwords ["(shift-index-for-insert", show i, show at ++ ")"]
   AfterInsertOf r axis at ->
     unwords ["(ref-after-insert", schemeRef r, schemeAxis axis, show at ++ ")"]
+  ShiftForDeleteOf i at -> unwords ["(shift-index-for-delete", show i, show at ++ ")"]
+  AfterDeleteOf r axis at ->
+    unwords ["(ref-after-delete", schemeRef r, schemeAxis axis, show at ++ ")"]
+  ShiftPastDeleteOf i at -> unwords ["(shift-index-past-delete", show i, show at ++ ")"]
+  PastDeleteOf r axis at ->
+    unwords ["(ref-past-delete", schemeRef r, schemeAxis axis, show at ++ ")"]
 
 -- | The same answer, written the way Guile's @write@ writes it.
 inHaskell :: Call -> String
@@ -119,6 +130,10 @@ inHaskell call = case call of
   AfterMoveOf r axis from to -> pairOf (refAfterMove r axis from to)
   ShiftForInsertOf i at -> show (shiftIndexForInsert i at)
   AfterInsertOf r axis at -> pairOf (refAfterInsert r axis at)
+  ShiftForDeleteOf i at -> maybe "#f" show (shiftIndexForDelete i at)
+  AfterDeleteOf r axis at -> maybe "#f" pairOf (refAfterDelete r axis at)
+  ShiftPastDeleteOf i at -> show (shiftIndexPastDelete i at)
+  PastDeleteOf r axis at -> pairOf (refPastDelete r axis at)
 
 pairOf :: Ref -> String
 pairOf (Ref row column) = "(" ++ show row ++ " . " ++ show column ++ ")"
@@ -145,6 +160,10 @@ genCall = Gen.choice
   , AfterMoveOf <$> genRef <*> genAxis <*> genIndex <*> genIndex
   , ShiftForInsertOf <$> genIndex <*> genIndex
   , AfterInsertOf <$> genRef <*> genAxis <*> genIndex
+  , ShiftForDeleteOf <$> genIndex <*> genIndex
+  , AfterDeleteOf <$> genRef <*> genAxis <*> genIndex
+  , ShiftPastDeleteOf <$> genIndex <*> genIndex
+  , PastDeleteOf <$> genRef <*> genAxis <*> genIndex
   ]
 
 -- | An index, small far more often than not.
@@ -186,6 +205,14 @@ refRoundTrips = property $ do
 --
 -- Rearranging
 --
+
+-- | An insert and the delete of what it opened leave the sheet as it was.
+insertIsUndone :: Property
+insertIsUndone = property $ do
+  r <- forAll genRef
+  axis <- forAll genAxis
+  at <- forAll genIndex
+  refAfterDelete (refAfterInsert r axis at) axis at === Just r
 
 moveIsUndone :: Property
 moveIsUndone = property $ do

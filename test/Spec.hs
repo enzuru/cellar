@@ -15,7 +15,7 @@ import qualified Data.ByteString as B
 import Data.IORef
 import Data.List (isInfixOf, nub, sort)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import System.Directory
 import System.Environment (lookupEnv, setEnv, unsetEnv)
@@ -61,6 +61,15 @@ main = do
     (Ref 3 1) (refAfterInsert (Ref 2 1) Row 2)
   check failures "and leaves what is above alone"
     (Ref 1 1) (refAfterInsert (Ref 1 1) Row 2)
+  check failures "a delete pulls what is below it up"
+    (Just (Ref 1 1)) (refAfterDelete (Ref 2 1) Row 1)
+  check failures "and a reference to the deleted line is nowhere"
+    Nothing (refAfterDelete (Ref 1 1) Row 1)
+  -- The two answers a delete can give, and why there are two: a reference on
+  -- its own dies with the line, and a range corner follows whatever took the
+  -- line's place so that the range is still a rectangle.
+  check failures "but a range corner on it follows what took its place"
+    (Ref 1 1) (refPastDelete (Ref 1 1) Row 1)
   -- A move and the move back are one permutation and its inverse, so together
   -- they are nothing at all.  The twin of this case is in tests/ref-test.scm,
   -- which checks the Guile copy of the same arithmetic: two implementations of
@@ -270,6 +279,34 @@ main = do
     Just (grown, _) -> do
       check failures "inserting a row makes the sheet taller" 11 (modelRows grown)
       check failures "and carries the active cell down" (Ref 2 0) (modelActive grown)
+  case deleteLine Column 0 widened of
+    Nothing -> check failures "a column is deleted" True False
+    Just (gone, command) -> do
+      check failures "deleting a column asks for the delete"
+        (Delete Column 0) command
+      check failures "and the sheet is one column narrower"
+        3 (length (modelColumns gone))
+      -- The column that goes takes its name with it, and the names of the
+      -- others do not shuffle, which is how a width stays with the column it
+      -- was set on rather than with the position it was set at.
+      check failures "the columns that are left keep the names they had"
+        (map ColumnId [1, 2, 3]) (modelColumns gone)
+      check failures "so a width follows its column to its new position"
+        [(0, 200)] (columnWidths gone)
+  case deleteLine Column 1 widened of
+    Nothing -> check failures "the widened column is deleted" True False
+    Just (gone, _) ->
+      check failures "and deleting the column itself takes its width away"
+        [] (columnWidths gone)
+  case deleteLine Row 0 (fst (pressKey Gdk.KEY_Down start)) of
+    Nothing -> check failures "a row is deleted" True False
+    Just (gone, _) -> do
+      check failures "deleting a row makes the sheet shorter" 9 (modelRows gone)
+      check failures "and the active cell comes up with what took its place"
+        (Ref 0 0) (modelActive gone)
+  check failures "the active cell steps back off the end of the sheet"
+    (Just (Ref 8 0))
+    (modelActive . fst <$> deleteLine Row 9 (fromMaybe start (withActive (Ref 9 0) start)))
 
   -- More of the grid: the parts a person reaches with a right-click, a drag
   -- or a resize, which the smoke scripts drive through real widgets and which
@@ -309,6 +346,10 @@ main = do
     Nothing (snd <$> moveLine Row 0 (-1) start)
   check failures "a row insert past the end is refused"
     Nothing (snd <$> insertLine Row 99 start)
+  check failures "a row delete past the end is refused"
+    Nothing (snd <$> deleteLine Row 99 start)
+  check failures "and the last column of a sheet cannot be deleted"
+    Nothing (snd <$> deleteLine Column 0 (newGridModel (emptyView 4 1)))
   check failures "a view with more columns brings them with it"
     6 (length (modelColumns (withView (emptyView 10 6) start)))
   check failures "and they are named after the ones already there"

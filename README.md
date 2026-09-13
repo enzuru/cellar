@@ -43,7 +43,11 @@ with `make run FILE=example.cellar`, or build a standalone wrapper with
 
 Run the test suites — they need no display — with `make check`. That is
 `make check-shell`, which is Haskell and includes the shell driving a real
-Guile kernel over a real pipe, and `make check-kernel`, which is Guile.
+Guile kernel over a real pipe; `make check-properties`, which is the laws the
+program rests on run against generated input, including the reference
+arithmetic checked against the Guile copy of it; `make check-window`, which
+hands events to the update and reads the state back, with the real kernel and
+the real folder and no display; and `make check-kernel`, which is Guile.
 
 Both `make run` and `./result/bin/cellar` give you a window carrying the
 desktop's fallback icon. That is expected: the icon appears only once Cellar is
@@ -155,10 +159,10 @@ follows its own cell.
 ## Adding rows and columns
 
 Right-click a row number in the gutter or a column header and take one of
-*Insert Row Before*, *Insert Row After*, *Insert Column Before* or *Insert
-Column After*. The right-click picks the line under the pointer before the menu
-opens, so what you point at is what you act on, and it stays selected afterwards
-so you can see what happened.
+*Insert Row Before*, *Insert Row After*, *Insert Column Before*, *Insert
+Column After*, *Delete Row* or *Delete Column*. The right-click picks the line
+under the pointer before the menu opens, so what you point at is what you act
+on, and it stays selected afterwards so you can see what happened.
 
 Ctrl+Alt with an arrow key does the same four things to the active cell, and so
 does the main menu. The sheet grows by a line each time; it never runs out of
@@ -177,6 +181,31 @@ pushes the whole range down instead, and one opened below it leaves it alone.
 
 A sheet grows to fit what is read into it, so a file saved after an insert opens
 at the size it was saved at rather than being trimmed back to the default 100×26.
+
+## Taking rows and columns away
+
+Ctrl+- deletes the row the active cell is on and Ctrl+Alt+- deletes its column,
+and both are in the menus beside the inserts. The cells on the line go with it,
+their files are removed from the folder, and everything below or right of it
+moves up or left.
+
+Deleting is the one rearrangement with nowhere to send some of what points at
+it, and Cellar says so rather than guessing. A reference written on its own —
+the `A3` in `(+ A3 1)` — becomes `%deleted` when row 3 goes, and the cell
+holding it reads *this cell refers to a cell that was deleted*. Letting it mean
+whatever slid up into row 3 would change what the cell computes without a word,
+which is the failure mode a spreadsheet is least able to show you.
+
+A corner of a written range is different, because a range is a rectangle and a
+rectangle with a missing corner is not one. Those follow whatever took the
+line's place, so `(sum (range 'A1 'A4))` with row 2 deleted becomes `(sum (range
+'A1 'A3))` and totals the three rows that are left. A range entirely below the
+deleted line moves up whole, and one entirely above it is untouched.
+
+The last row of a sheet cannot go, and neither can the last column: a sheet with
+no cells has nothing to draw and nothing to hold. Both halves refuse it, the
+window with a message and the kernel with an error, so a delete that arrives any
+other way is refused too.
 
 ## Two processes
 
@@ -303,6 +332,8 @@ tell the two apart on sight.
 |Ctrl+Shift+Left/Right              |Move the active column    |
 |Ctrl+Alt+Up/Down                   |Insert a row before/after |
 |Ctrl+Alt+Left/Right                |Insert a column before/after|
+|Ctrl+-                             |Delete the active row     |
+|Ctrl+Alt+-                         |Delete the active column  |
 |Ctrl+R                             |Recalculate               |
 |Ctrl+T                             |Add a sheet to this workbook|
 |Ctrl+Shift+R                       |Rename the sheet showing  |
@@ -710,6 +741,24 @@ opens no dialogs, deliberately -- `gui-smoke.sh` has drag steps too, but they
 come after the editor steps, and where the editor dialog does not take its
 keystrokes it stays open and swallows every click after it, so a pass there
 proves nothing about dragging.
+
+Deleting a row or a column is covered at every level it passes through, because
+the interesting part of it is what happens to the references that named the line
+and those are rewritten in a third place again. The Guile model suite deletes a
+row and checks that the cells on it are gone, that what was below has come up,
+that a reference to the deleted line is written `%deleted` and reads as an
+error, and that a range it was taken out of has shrunk by one rather than lost a
+corner; it also checks that the last column of a sheet refuses to go. The
+protocol suite asks the kernel for the same deletes over the pipe and reads the
+sources it sends back. The Haskell suite checks the same arithmetic on its own
+side and the grid's half of it: the columns that are left keep the names their
+widths hang on, and the active cell steps back when the line it was on was the
+last. The window suite does it end to end — a row deleted, the cell that was
+below it now on top, the cell file of the deleted row removed from the folder —
+and `tests/gui-menu-smoke.sh` presses Ctrl+- and Ctrl+Alt+- in the real
+application and reads the sheet file afterwards, which is what caught the first
+spelling of the column shortcut: `<Control><Shift>minus` parses and then never
+fires, because under Shift the keyval is `underscore`.
 
 `tests/gui-kernel-smoke.sh` then plants `(let loop () (loop))` in a workbook and
 opens it. The window survives, still draws, still opens dialogs, and still

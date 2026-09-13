@@ -189,8 +189,26 @@ tests window root = do
     check window "inserting a row makes the sheet taller" True taller
     pushed <- settle window (holds (tabId tab) (Ref 1 0) "second")
     check window "and pushes the cell below it down" True pushed
+    -- The row the cell sits on goes, and with it the cell's file, which is
+    -- the part the shell has to do and the kernel cannot.
+    happens window (GridSaid (tabId tab) (Pressed (Ref 0 0) 1))
+    happens window (Act (DeleteLine Row))
+    pulled <- settle window (holds (tabId tab) (Ref 0 0) "second")
+    check window "deleting a row pulls what was below it up" True pulled
+    _ <- quiet window
+    shorter <- stateOf window
+    check window "and makes the sheet shorter" (Just 100)
+      (viewRows . modelView . tabGrid <$> tabById (tabId tab) shorter)
+    happens window (Act (DeleteLine Row))
+    emptied' <- settle window $ \s -> case tabById (tabId tab) s of
+      Nothing -> False
+      Just found -> sourceAt (modelView (tabGrid found)) (Ref 0 0) == Nothing
+    check window "deleting the row a cell is on takes the cell away" True emptied'
+    _ <- quiet window
+    gone <- doesFileExist (cellFilePath (sales </> "sheets" </> "Summary") "A1")
+    check window "and its file goes with it" False gone
     happens window (Act RecalculateSheet)
-    again <- settle window (holds (tabId tab) (Ref 1 0) "second")
+    again <- settle window (holds (tabId tab) (Ref 1 0) "")
     check window "recalculating leaves the sheet saying the same thing" True again
 
   section "the tabs"
@@ -293,6 +311,12 @@ tests window root = do
       Nothing -> False
       Just found -> viewColumns (modelView (tabGrid found)) > 26
     check window "inserting a column makes the sheet wider" True wider
+    happens window (GridSaid (tabId tab) (Pressed (Ref 0 0) 1))
+    happens window (Act (DeleteLine Column))
+    _ <- quiet window
+    narrower <- stateOf window
+    check window "deleting a column makes the sheet narrower" (Just 26)
+      (viewColumns . modelView . tabGrid <$> tabById (tabId tab) narrower)
     -- An empty cell has no file until somebody asks to open one, which is
     -- what brings it into being.
     happens window (GridSaid (tabId tab) (Pressed (Ref 5 5) 1))
@@ -363,6 +387,11 @@ tests window root = do
   check window "the editor command is saved as it is typed" "hx" written
 
   section "the selection"
+  -- Wait for the kernel to have answered everything the scratch workbook
+  -- asked for.  The state says a workbook is open as soon as its sheets are
+  -- read off the disk, but the answer to the `open' request lands later and
+  -- puts the cursor in the corner, so a click before then is undone by it.
+  _ <- quiet window
   selected <- stateOf window
   forM_ (currentTab selected) $ \tab -> do
     happens window (GridSaid (tabId tab) (Pressed (Ref 2 1) 1))
@@ -435,6 +464,10 @@ settleOn window wanted = go (200 :: Int)
         threadDelay 20000
         drain window
         go (tries - 1)
+
+-- | Turn the loop over until the kernel owes no more answers.
+quiet :: Window -> IO Bool
+quiet window = settleOn window (M.null <$> readIORef (envTags (windowEnv window)))
 
 -- | Turn the loop over until the state says what it is waiting for.
 settle :: Window -> (State -> Bool) -> IO Bool

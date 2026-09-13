@@ -60,6 +60,21 @@
 (check "an index the move never reaches stays where it is" 5 (shift-index 5 1 3))
 (check "an insert at an index moves it" 2 (shift-index-for-insert 1 1))
 (check "and one after it does not" 0 (shift-index-for-insert 0 1))
+(check "a delete pulls what is below it up"
+       (make-ref 1 1) (ref-after-delete (make-ref 2 1) 'row 1))
+(check "and leaves what is above alone"
+       (make-ref 0 1) (ref-after-delete (make-ref 0 1) 'row 1))
+(check "a reference to the deleted line itself is nowhere"
+       #f (ref-after-delete (make-ref 1 1) 'row 1))
+(check "a column delete pulls what is beside it over"
+       (make-ref 1 1) (ref-after-delete (make-ref 1 2) 'column 1))
+(check "a delete at an index takes it away" #f (shift-index-for-delete 1 1))
+(check "one below it comes up" 1 (shift-index-for-delete 2 1))
+(check "and one above it stays" 0 (shift-index-for-delete 0 1))
+(check "a range corner on the deleted line follows what took its place"
+       1 (shift-index-past-delete 1 1))
+(check "and one below it comes up like any other"
+       1 (shift-index-past-delete 2 1))
 
 ;; A move and the move back are one permutation and its inverse, so together
 ;; they are nothing at all.  Cheaper to check over a small grid than to reason

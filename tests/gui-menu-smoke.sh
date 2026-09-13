@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 #
-# The menu on a row number and on a column heading.
+# The menu on a row number and on a column heading, and the delete shortcuts.
 #
-# Right-clicking either one picks that line and offers the four inserts.  Both
+# Right-clicking either one picks that line and offers the inserts and the
+# deletes.  Both
 # are gestures Cellar installs by hand, because a heading is GtkColumnView's
 # own widget and a gesture that has to claim an event sequence needs the
 # gesture object in its own handler -- so neither is a thing the declarative
 # markup can say, and neither is a thing the compiler can check.
 #
 # What is checked is the folder rather than the picture: an insert makes the
-# sheet a row taller or a column wider, and the sheet file says so.
+# sheet a row taller or a column wider, a delete makes it shorter or narrower,
+# and the sheet file says so.
+#
+# The deletes are driven from the keyboard rather than from the menu, which
+# checks the accelerators as well: a shortcut written with Shift and a
+# punctuation key is the kind that parses and then never fires, because the
+# keyval under Shift is a different one.
 #
 # Nothing here opens a dialog, which is what makes it worth trusting on a
 # machine where the editor never receives what xdotool types.
@@ -94,6 +101,22 @@ shot 3-column-inserted
 settle 20 says "$SHEET/sheet.scm" 'columns . 27'
 expect "inserting a column from the heading menu makes the sheet wider" \
   says "$SHEET/sheet.scm" 'columns . 27'
+
+echo "3. Ctrl+- deletes the active row"
+# Click a cell first, so that the grid has the keyboard.
+xdotool mousemove 220 205 click 1; sleep 2
+xdotool key ctrl+minus; sleep 3
+shot 4-row-deleted
+settle 20 says "$SHEET/sheet.scm" 'rows . 100'
+expect "Ctrl+- makes the sheet a row shorter" \
+  says "$SHEET/sheet.scm" 'rows . 100'
+
+echo "4. Ctrl+Alt+- deletes the active column"
+xdotool key ctrl+alt+minus; sleep 3
+shot 5-column-deleted
+settle 20 says "$SHEET/sheet.scm" 'columns . 26'
+expect "Ctrl+Alt+- makes the sheet a column narrower" \
+  says "$SHEET/sheet.scm" 'columns . 26'
 
 echo
 echo "app log (excluding harmless environment noise):"

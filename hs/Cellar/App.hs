@@ -217,6 +217,11 @@ installActions env application = do
   define "insert-row-after" ["<Control><Alt>Down"] (InsertLine Row False)
   define "insert-column-before" ["<Control><Alt>Left"] (InsertLine Column True)
   define "insert-column-after" ["<Control><Alt>Right"] (InsertLine Column False)
+  -- Ctrl+Alt+- for the column rather than Ctrl+Shift+-.  The shifted one
+  -- parses and then never fires: on a US layout the keyval under Shift is
+  -- underscore, not minus, so the shortcut is waiting for a key nobody sends.
+  define "delete-row" ["<Control>minus"] (DeleteLine Row)
+  define "delete-column" ["<Control><Alt>minus"] (DeleteLine Column)
   define "clear-recent" [] ClearRecent
   define "preferences" ["<Control>comma"] Preferences
   define "shortcuts" ["<Control>question"] Shortcuts

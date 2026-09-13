@@ -170,6 +170,21 @@
          '(("A2" . "2") ("A3" . "1") ("B3" . "(+ A3 A2)"))
          (payload 'sources answer)))
 
+(let ((answer (ask 'delete "R" 'row 0)))
+  (check "a delete shrinks the sheet" 5 (payload 'rows answer))
+  (check "and pulls the references back up"
+         '(("A1" . "2") ("A2" . "1") ("B2" . "(+ A2 A1)"))
+         (payload 'sources answer)))
+
+(ask 'open "D" 3 3 '(("A1" . "1") ("A2" . "2") ("B1" . "(+ A2 1)")))
+(let ((answer (ask 'delete "D" 'row 1)))
+  (check "a cell on the deleted row is gone, and what named it says so"
+         '(("A1" . "1") ("B1" . "(+ %deleted 1)"))
+         (payload 'sources answer))
+  (check "and the cell that named it is an error"
+         "#ERR"
+         (cadr (assoc "B1" (payload 'cells answer)))))
+
 (format #t "-- sheets that name each other~%")
 
 (define (other-named name answer)
@@ -232,6 +247,14 @@
 (check "a move that goes nowhere"
        '(failed "that line is already at the edge")
        (ask 'move "R" 'row 0 0))
+(check "a delete past the end of a sheet"
+       '(failed "there is nothing to delete there, or it is the last one")
+       (ask 'delete "R" 'row 99))
+(check "and the last column of a sheet, which would leave it with none"
+       '(failed "there is nothing to delete there, or it is the last one")
+       (begin (ask 'delete "D" 'column 0)
+              (ask 'delete "D" 'column 0)
+              (ask 'delete "D" 'column 0)))
 (check "a sheet named with something that is not a string"
        '(failed "a sheet is named with a string, not 7")
        (ask 'open 7 4 4 '()))
