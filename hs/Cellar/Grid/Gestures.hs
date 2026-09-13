@@ -159,6 +159,11 @@ installLineClickOn gestures label axis locate = forM_ (gestureMenu gestures) $ \
   handed <- Gtk.gestureClickNew
   gesture <- retain Gtk.GestureClick handed
   Gtk.gestureSingleSetButton gesture 3
+  -- Capture, not bubble, because of where this ends up: a column heading is a
+  -- GtkButton of GTK's own with a right-click gesture already on it, for the
+  -- header menu a column can carry.  A gesture on the row that waits its turn
+  -- never hears the press at all.
+  Gtk.eventControllerSetPropagationPhase gesture Gtk.PropagationPhaseCapture
   _ <- GI.on gesture #pressed $ \_ x y -> do
     told <- locate
     found <- case told of
