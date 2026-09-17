@@ -64,10 +64,61 @@ here would take the window's answers away with it."
       (car args)
       (format #f "~a ~s" key args)))
 
+;;;
+;;; What the kernel answers
+;;;
+
+;; The operations and how many arguments each one takes, written down once.
+;;
+;; The `match' below is the only thing that serves a request, and a match has
+;; no way of saying what it would have matched.  So the same list is here as
+;; data, for two reasons.  A request with the wrong number of arguments falls
+;; off the end of a match and comes back as `no such request', which sends
+;; somebody looking for a spelling mistake that is not there; with this the
+;; kernel can say what is actually wrong.  And the shell builds these requests
+;; in Haskell, which is a second copy of the same list, so the suite asks the
+;; kernel for this one and checks that the two agree.
+(define %operations
+  '((ping 0)
+    (open 4)
+    (close 1)
+    (rename 2)
+    (set-cell 3)
+    (preview 3)
+    (move 4)
+    (insert 3)
+    (delete 3)
+    (recalculate 1)
+    (snapshot 1)
+    (sources 1)
+    (operations 0)))
+
+(define (operation-arity op)
+  (let ((found (assq op %operations)))
+    (and found (cadr found))))
+
 (define (serve kernel id op arguments)
+  (let ((arity (operation-arity op)))
+    (cond
+     ((not arity)
+      (throw 'cellar-kernel-error (format #f "no such request: ~a" op)))
+     ((not (= arity (length arguments)))
+      (throw 'cellar-kernel-error
+             (format #f "~a takes ~a argument~a, not ~a"
+                     op arity (if (= arity 1) "" "s") (length arguments))))
+     (else (serve-known kernel id op arguments)))))
+
+(define (serve-known kernel id op arguments)
   (match (cons op arguments)
 
     (('ping) (reply id '()))
+
+    ;; Everything the kernel answers, and how many arguments each one takes.
+    ;; The shell asks this to check that its own list has not drifted.
+    (('operations)
+     (reply id (map (lambda (entry)
+                      (cons (car entry) (cadr entry)))
+                    %operations)))
 
     ;; The shell has read a sheet off the disk and is handing it over.  Opening
     ;; the same name twice replaces what was there, which is what a reload is.
@@ -177,6 +228,7 @@ here would take the window's answers away with it."
      (let ((s (sheet-called kernel sheet)))
        (reply id `((sheet . ,(sheet-name s)) (sources . ,(sheet->alist s))))))
 
+    ;; Unreachable: `serve' has already refused anything not in %operations.
     (_ (throw 'cellar-kernel-error (format #f "no such request: ~a" op)))))
 
 (define (reply id payload) (list 'reply id payload))

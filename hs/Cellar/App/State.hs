@@ -110,6 +110,9 @@ data Tag
   | Closed
     -- ^ A sheet was closed: what is left is in the answer.
   | Renamed TabId
+  | Previewing TabId Int
+    -- ^ The cell editor asked what a half-written expression comes to, under
+    -- its own number, so that a late answer can be told from the newest one.
   | Ignored
     -- ^ An answer nobody is waiting for.
   deriving (Eq, Show)

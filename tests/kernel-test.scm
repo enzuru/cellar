@@ -241,6 +241,17 @@
 (check "a request it does not know"
        '(failed "no such request: fly")
        (ask 'fly "R"))
+(check "a request with too few arguments says so, rather than not existing"
+       '(failed "move takes 4 arguments, not 2")
+       (ask 'move "R" 'row))
+(check "and one with too many"
+       '(failed "close takes 1 argument, not 2")
+       (ask 'close "R" "S"))
+(check "the kernel says what it answers, so the shell can check its own list"
+       '((ping . 0) (open . 4) (close . 1) (rename . 2) (set-cell . 3)
+         (preview . 3) (move . 4) (insert . 3) (delete . 3)
+         (recalculate . 1) (snapshot . 1) (sources . 1) (operations . 0))
+       (ask 'operations))
 (check "something that is not a cell"
        '(failed "not a cell: \"zzz\"")
        (ask 'set-cell "R" "zzz" "1"))

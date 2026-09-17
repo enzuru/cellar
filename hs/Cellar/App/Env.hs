@@ -37,9 +37,7 @@ module Cellar.App.Env
   , askAboutTheKernel
   , neverMindTheKernel
   , openEditor
-  , answerEditor
-  , watchPathsFor
-  , unwatchAll
+  , showPreview
   , showPalette
   , fillRecentMenu
   , openWithDesktop
@@ -67,13 +65,11 @@ import Cellar.App.Event
 import Cellar.App.State
 import Cellar.Client
 import Cellar.Config
+import Cellar.Op (Op, opArguments, opName)
 import Cellar.Editor
 import Cellar.Grid.Gestures
-import Cellar.Grid.Model (GridModel, modelDrag)
 import Cellar.Ref
-import Cellar.Sexp
 import Cellar.Store (workbookFolderName)
-import Cellar.Watch
 
 data Env = Env
   { envKernel :: Kernel
@@ -87,7 +83,6 @@ data Env = Env
     -- | The gestures on each sheet's grid, made the first time its widgets
     -- are.
   , envGestures :: IORef (M.Map TabId Gestures)
-  , envWatcher :: IORef (Maybe Watcher)
     -- | The cell editor asks the kernel what a half-written expression comes
     -- to, and is handed the answer.  It is the one part of Cellar that is
     -- still a window of its own rather than part of this one, so it keeps the
@@ -98,7 +93,12 @@ data Env = Env
     -- that: the update changes the state by handing an event back, which is
     -- one turn of the loop too late.
   , envTags :: IORef (M.Map RequestId Tag)
-  , envPreviews :: IORef (M.Map RequestId (Sexp -> IO ()))
+    -- | The cell editor's way of being handed an answer, while one is up.
+    -- One slot rather than a map of pending questions: there is at most one
+    -- editor, its questions go out through the loop like everything else, and
+    -- the number that comes back with an answer is what tells a late one from
+    -- the newest.
+  , envEditor :: IORef (Maybe (Int -> Preview -> IO ()))
     -- | The submenu of workbooks opened lately, which Cellar fills in because
     -- its length is not known until the preferences are read.
   , envRecentSection :: Gio.Menu
@@ -129,9 +129,8 @@ newEnv kernel poster uiDirectory builder = do
     <$> newIORef Nothing
     <*> newIORef Nothing
     <*> newIORef M.empty
+    <*> newIORef M.empty
     <*> newIORef Nothing
-    <*> newIORef M.empty
-    <*> newIORef M.empty
     <*> pure section
     <*> newIORef Nothing
     <*> pure palette
@@ -158,11 +157,11 @@ notify env message = onMain $ do
 -- The request is numbered and written down before it is sent, because the
 -- kernel is quick: an answer can be read off the pipe by the time a request
 -- that was sent first has been noted.
-asking :: Env -> [(String, [Sexp], Tag)] -> IO ()
-asking env wanted = forM_ wanted $ \(op, arguments, tag) -> do
+asking :: Env -> [(Op, Tag)] -> IO ()
+asking env wanted = forM_ wanted $ \(op, tag) -> do
   requestId <- reserve (envKernel env)
   modifyIORef' (envTags env) (M.insert requestId tag)
-  sendRequest (envKernel env) requestId op arguments
+  sendRequest (envKernel env) requestId (opName op) (opArguments op)
 
 -- | What a request was for, forgetting it on the way out.  A number nobody
 -- wrote anything down for is 'Ignored', which is what an answer to something
@@ -213,10 +212,12 @@ forgetGestures env tab = modifyIORef' (envGestures env) (M.delete tab)
 
 -- | Paint the drag on the column headers, which are GTK's widgets rather than
 -- ours to draw.
-showDrag :: Env -> TabId -> GridModel -> IO ()
-showDrag env tab model = onMain $ do
+-- | Draw the line being dragged: which axis it is on, where it started and
+-- where it would land.
+showDrag :: Env -> TabId -> Maybe (Axis, Int, Int) -> IO ()
+showDrag env tab drag = onMain $ do
   gestures <- gesturesFor env tab
-  gestureDragShown gestures (modelDrag model)
+  gestureDragShown gestures drag
 
 --
 -- The dialogs
@@ -427,34 +428,21 @@ neverMindTheKernel env = onMain $ do
 -- The cell editor, which is a window of its own
 --
 
-openEditor :: Env -> TabId -> String -> Ref -> Maybe String -> IO ()
-openEditor env tab sheetName r source = onMain $ do
+openEditor :: Env -> TabId -> Ref -> Maybe String -> IO ()
+openEditor env tab r source = onMain $ do
   window <- readIORef (envWindow env)
-  forM_ window $ \parent ->
-    openCellEditor (envUiDirectory env) parent r source
-      (\text answer -> do
-         requestId <- call (envKernel env) "preview"
-                        [Str sheetName, Str (refName r), Str text]
-         modifyIORef' (envPreviews env) $ M.insert requestId $ \payload ->
-           answer (previewOf payload))
+  forM_ window $ \parent -> do
+    answer <- openCellEditor (envUiDirectory env) parent r source
+      (\mine text -> post env (PreviewWanted tab r mine text))
       (\text -> post env (CellEdited tab r text))
+      (writeIORef (envEditor env) Nothing)
+    writeIORef (envEditor env) (Just answer)
 
-previewOf :: Sexp -> Preview
-previewOf payload = Preview
-  { previewText = fromMaybe "" (lookupKey "display" payload >>= asString)
-  , previewIsError = maybe False (const True)
-      (lookupKey "error" payload >>= asString)
-  }
-
--- | Hand an answer to the editor, if the editor is what asked.  Answers with
--- whether it was.
-answerEditor :: Env -> RequestId -> Sexp -> IO Bool
-answerEditor env requestId payload = do
-  found <- atomicModifyIORef' (envPreviews env) $ \waiting ->
-    (M.delete requestId waiting, M.lookup requestId waiting)
-  case found of
-    Nothing -> pure False
-    Just answer -> onMain (answer payload) >> pure True
+-- | Hand the editor what its question came to, if one is still up.
+showPreview :: Env -> Int -> Preview -> IO ()
+showPreview env mine answer = onMain $ do
+  editor <- readIORef (envEditor env)
+  forM_ editor $ \show' -> show' mine answer
 
 -- | The submenu of workbooks opened lately.  Built here rather than in the
 -- Blueprint file because its length is not known until the preferences are
@@ -497,18 +485,6 @@ showPalette env css = onMain (Gtk.cssProviderLoadFromString (envPalette env) css
 --
 
 -- | Watch these folders, and drop whatever was being watched before.
-watchPathsFor :: Env -> [FilePath] -> IO ()
-watchPathsFor env paths = do
-  unwatchAll env
-  watcher <- watchPaths paths (post env DiskChanged)
-  writeIORef (envWatcher env) (Just watcher)
-
-unwatchAll :: Env -> IO ()
-unwatchAll env = do
-  previous <- readIORef (envWatcher env)
-  forM_ previous unwatch
-  writeIORef (envWatcher env) Nothing
-
 --
 -- The Blueprint file
 --

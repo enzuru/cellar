@@ -101,7 +101,7 @@ data Event
   | Remembered FilePath
   | ScratchMade FilePath
     -- ^ A workbook to think in was made here.
-  | SheetsOnDisk [(String, Sheet)] Bool
+  | SheetsOnDisk [(String, Sheet)]
     -- ^ The sheets as they now are on disk, and whether the set of them
     -- changed rather than only their contents.
   | DiskChanged
@@ -118,4 +118,15 @@ data Event
     -- whether to make a Git repository of it.
   | FolderChosen FilePath
   | CellEdited TabId Ref String
-  deriving (Show)
+    -- | A sheet's folder has gone from the disk.  The kernel still holds the
+    -- sheet, and the sheets that are left may have been naming it.
+  | SheetRemoved Workbook String
+    -- | These folders are being watched for changes made behind our back.
+    -- The window holds the list because what is watched is a fact about the
+    -- workbook that is open, and a subscription that starts and stops with
+    -- the state needs the state to say so.
+  | Watching [FilePath]
+    -- | The cell editor wants to know what this half-written expression comes
+    -- to.  The number is the editor's own, and comes back with the answer.
+  | PreviewWanted TabId Ref Int String
+  deriving (Eq, Show)

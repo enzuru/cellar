@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -11,7 +12,9 @@
 -- it in step.
 module Cellar.App (runApp, applicationId, withApp) where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (newChan, readChan, threadDelay, writeChan)
+import Control.Exception (uninterruptibleMask_)
+import qualified Control.Monad.Catch as Catch
 import qualified Control.Concurrent.Async as Async
 import Control.Concurrent.STM (atomically)
 import Control.Monad (forM_, forever, unless, void)
@@ -31,18 +34,25 @@ import qualified GI.Gtk as Gtk
 import qualified GI.GtkSource as Source
 
 import qualified GI.Gtk.Declarative.App.Simple as Simple
-import GI.Gtk.Declarative.App.Simple (App (..), startInApplication)
+import GI.Gtk.Declarative.App.Simple
+  ( App (..), Cmd, Sub, Transition (..), defaultApp, keyed, perform, startInApplication
+  , sub )
 import Pipes (Producer, liftIO, yield)
 import Pipes.Concurrent (fromInput, send, spawn, unbounded)
 
+import Cellar.App.Effect
 import Cellar.App.Env
 import Cellar.App.Event
 import Cellar.App.State
+import qualified Cellar.App.Perform as Perform
+import Cellar.App.Perform (settleMicroseconds)
 import qualified Cellar.App.Update as Update
 import Cellar.App.Update (patienceSeconds)
 import Cellar.App.View
 import Cellar.Client
 import Cellar.Config
+import qualified Cellar.Op as Op
+import Cellar.Watch (unwatch, watchPaths)
 import Cellar.Grid.Gestures (gestureHandlers)
 import Cellar.Grid.Model (GridHandlers (..))
 import Cellar.Ref
@@ -109,16 +119,17 @@ startWindow application opening = do
             tookWindow env window
         , viewTookToasts = tookToasts env
         }
-      simple = App
+      simple = defaultApp
         { view = windowView viewEnv
-        , Simple.update = Update.update env
-        , inputs = [fromInput input, kernelReplies env, watchdog env]
+        , Simple.update = \s e -> stepping env (Update.update s e)
+        , inputs = [fromInput input, kernelReplies env]
+        , subscriptions = watching env
         , initialState = newState config home
         }
 
   -- Ask the kernel for nothing in particular, so that the first answer marks
   -- the end of starting up rather than the end of somebody's first edit.
-  asking env [("ping", [], Pinged)]
+  asking env [(Op.Ping, Pinged)]
   forM_ opening $ \path -> poster (Act (OpenRecentAt path))
 
   -- The loop runs in a thread of its own, and holds the application while it
@@ -128,8 +139,30 @@ startWindow application opening = do
   void $ Async.async $ do
     _ <- Async.waitCatch loop
     stopKernel kernel
-    unwatchAll env
   pure poster
+
+-- | Cellar's answer to an event, as the loop wants it.
+--
+-- The update hands back its own jobs rather than the library's commands, so
+-- that the headless suite can run them without a loop or a display.  This is
+-- the one place the two meet.
+stepping :: Env -> Step -> Transition State Event
+stepping env = \case
+  Stop -> Exit
+  Step next doings -> Transition next (foldMap (asCmd env) doings)
+
+-- | One of the update's jobs, as a command the loop can run.
+--
+-- A 'Settle' waits before it acts, and the wait is what a later one of the
+-- same name cancels.  Once the effect has started it finishes, under
+-- 'uninterruptibleMask_', or a cancellation landing in the middle of a write
+-- would leave half a file in the workbook.
+asCmd :: Env -> Doing -> Cmd Event
+asCmd env = \case
+  Now effect -> perform (Perform.perform env effect)
+  Settle key effect -> keyed key . perform $ do
+    threadDelay settleMicroseconds
+    uninterruptibleMask_ (Perform.perform env effect)
 
 -- | What the grid's widgets are handed to when they are built.  The gestures
 -- for a sheet are made the first time one of its widgets is.
@@ -152,16 +185,43 @@ kernelReplies env = forever $ do
   replies <- liftIO (awaitReplies (envKernel env))
   forM_ replies $ \reply -> case reply of
     Answered requestId payload -> do
-      -- The cell editor asks for previews of its own and is handed them
-      -- directly; it is the one part of Cellar that is still a window of its
-      -- own rather than part of this one.
-      mine <- liftIO (answerEditor env requestId payload)
-      unless mine $ do
-        tag <- liftIO (tagOf env requestId)
-        yield (KernelSaid tag payload)
+      tag <- liftIO (tagOf env requestId)
+      yield (KernelSaid tag payload)
     Refused requestId why -> do
       tag <- liftIO (tagOf env requestId)
       yield (KernelRefused tag why)
+
+-- | What the window listens to, which its own state decides.
+--
+-- The loop compares these with what it is running after every event: a name
+-- that is new starts, a name that has gone is cancelled, and a name in both
+-- is left running. So the name has to say everything that matters, which for
+-- the watcher is the folders themselves.
+watching :: Env -> State -> [Sub Event]
+watching env state =
+  -- The watchdog runs for as long as the window does.  It could be gated on
+  -- the kernel owing an answer, but the cell editor asks for previews of its
+  -- own that never pass through the update, so the state cannot see all of
+  -- what is outstanding, and a safety net with a hole in it is worse than one
+  -- that costs two wakeups a second.
+  sub "kernel-watchdog" (watchdog env)
+    : [ sub (watchKey paths) (watchingFolders paths)
+      | let paths = stateWatching state, not (null paths) ]
+
+watchKey :: [FilePath] -> Text
+watchKey paths = "watch:" <> T.intercalate "\n" (map T.pack paths)
+
+-- | Watch these folders, and say so when any of them changes.
+--
+-- The monitors belong to the subscription rather than to a reference held
+-- somewhere: when the state stops naming these folders the loop cancels this,
+-- and the cancellation is what takes them down.
+watchingFolders :: [FilePath] -> Producer Event IO ()
+watchingFolders paths = do
+  changed <- liftIO newChan
+  watcher <- liftIO (watchPaths paths (writeChan changed ()))
+  forever (liftIO (readChan changed) >> yield DiskChanged)
+    `Catch.onException` liftIO (unwatch watcher)
 
 -- | Watch for a cell that is not going to finish.
 --
@@ -175,10 +235,10 @@ watchdog env = go False
       liftIO (threadDelay 500000)
       alive <- liftIO (kernelAlive (envKernel env))
       waiting <- liftIO (outstanding (envKernel env))
-      now <- if not alive || waiting == 0
+      stuck <- if not alive || waiting == 0
         then pure False
         else liftIO (stalled (envKernel env) patienceSeconds)
-      if now == before then go before else yield (Stalled now) >> go now
+      if stuck == before then go before else yield (Stalled stuck) >> go stuck
 
 --
 -- The actions

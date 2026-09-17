@@ -48,18 +48,24 @@ settleMilliseconds = 150
 
 -- | Present the editor for a cell.
 --
--- The preview action is handed the text and a procedure to give the answer to;
--- it is what talks to the kernel.  The apply action is called with the new
--- source when the edit is applied.
+-- The editor asks about a half-written expression by number and is handed the
+-- answer by number, rather than being given a procedure to call back: the
+-- asking goes out through the window's own loop like everything else, and an
+-- answer comes back the same way.  Answering with the number is what lets a
+-- late answer be recognised as stale and dropped.
+--
+-- Hands back the procedure that takes an answer.  The caller holds it for as
+-- long as the editor is up, and the closing action says when that is over.
 openCellEditor
   :: FilePath                                     -- ^ where the .ui files are
   -> Adw.ApplicationWindow
   -> Ref
   -> Maybe String                                 -- ^ the cell's current source
-  -> (String -> (Preview -> IO ()) -> IO ())      -- ^ evaluate without keeping
+  -> (Int -> String -> IO ())                     -- ^ ask about this text
   -> (String -> IO ())                            -- ^ apply
-  -> IO ()
-openCellEditor uiDirectory parent r source preview apply = do
+  -> IO ()                                        -- ^ the editor has closed
+  -> IO (Int -> Preview -> IO ())
+openCellEditor uiDirectory parent r source preview apply closed = do
   builder <- Gtk.builderNewFromFile (uiDirectory ++ "/editor.ui")
   dialog <- getObject builder "editor_dialog" Adw.Dialog
   title <- getObject builder "editor_title" Adw.WindowTitle
@@ -92,12 +98,14 @@ openCellEditor uiDirectory parent r source preview apply = do
         text <- bufferText
         if all (`elem` (" \t\n\r" :: String)) text
           then writeIORef shown mine >> showEmpty result
-          else preview text $ \answer -> do
-                 current <- readIORef shown
-                 -- Older than what is already up: drop it.
-                 when (mine > current) $ do
-                   writeIORef shown mine
-                   showAnswer result answer
+          else preview mine text
+
+      -- Older than what is already up: drop it.
+      answered mine result' = do
+        current <- readIORef shown
+        when (mine > current) $ do
+          writeIORef shown mine
+          showAnswer result result'
 
       askSoon = do
         busy <- readIORef settling
@@ -126,9 +134,12 @@ openCellEditor uiDirectory parent r source preview apply = do
       else pure False
   Gtk.widgetAddController view keys
 
+  _ <- on dialog #closed closed
+
   ask
   Adw.dialogPresent dialog (Just parent)
   void (Gtk.widgetGrabFocus view)
+  pure answered
 
 unless' :: Bool -> IO () -> IO ()
 unless' condition action = if condition then pure () else action

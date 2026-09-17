@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -27,17 +28,19 @@ import System.Environment (setEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
 
-import GI.Gtk.Declarative.App.Simple (Transition (..))
 
 import Cellar.App.Env
 import Cellar.App.Event
 import Cellar.App.State
+import Cellar.App.Effect (Doing (..), Effect, Step (..))
+import Cellar.App.Perform (perform)
 import Cellar.App.Update (update)
 import Cellar.Client
+import Cellar.Op (Op (..), everyOp, opArguments, opArity, opName)
 import Cellar.Config
 import Cellar.Grid.Model
 import Cellar.Ref
-import Cellar.Sexp (asInt, list, lookupKey)
+import Cellar.Sexp (Sexp (..), asInt, list, lookupKey, toList)
 import Cellar.Store
 import Cellar.View
 
@@ -251,6 +254,20 @@ tests window root = do
     check window "a cell written from outside is taken in" True noticed
 
   section "the kernel"
+  -- The requests the shell can build, against the ones the kernel answers.
+  -- Two copies of one list drift, and nothing in either language would say so,
+  -- which is the same reason the reference arithmetic is checked against the
+  -- Guile copy of it in test/Properties.hs.
+  happens window (KernelSaid Ignored (list []))
+  known <- askOperations window
+  check window "the kernel answers every request the shell can build" []
+    [ (opName op, opArity op)
+    | op <- everyOp
+    , lookup (opName op) known /= Just (opArity op) ]
+  check window "and the shell can build every request the kernel answers" []
+    [ name | (name, _) <- known, name `notElem` map opName everyOp ]
+
+
   -- Nothing is said about a kernel that has never answered, because one that
   -- is still starting has been waiting for reasons that have nothing to do
   -- with the cell it was handed.
@@ -427,17 +444,32 @@ keyDelete = 0xffff
 -- This is the application's own loop with the drawing left out: the update
 -- says what the state becomes and what to do, the doing posts more events, and
 -- this goes round until there is nothing left to answer.
+--
+-- Every job runs, in order, including the ones the real loop would have given
+-- a name and cancelled.  A cancelled job is one whose effect the window never
+-- wanted twice, so running it twice is not wrong; and a suite that dropped
+-- jobs on a race would report a different thing on different days.
 happens :: Window -> Event -> IO ()
 happens window event = do
   state <- readIORef (windowState window)
-  case update (windowEnv window) state event of
-    Exit -> pure ()
-    Transition next action -> do
+  case update state event of
+    Stop -> pure ()
+    Step next doings -> do
       writeIORef (windowState window) next
-      answer <- action
-      forM_ answer (happens window)
+      forM_ doings $ \doing -> do
+        answer <- perform (windowEnv window) (effectOf doing)
+        forM_ answer (happens window)
       drain window
   drain window
+
+-- | What a job asks for, whether or not the real loop would have waited
+-- first.  A job the loop would have cancelled is one whose effect the window
+-- never wanted twice, so doing it here is not wrong, and a suite that dropped
+-- jobs on a race would report a different thing on different days.
+effectOf :: Doing -> Effect
+effectOf = \case
+  Now effect -> effect
+  Settle _ effect -> effect
 
 -- | Deal with whatever the kernel has said and whatever the last turn posted.
 drain :: Window -> IO ()
@@ -464,6 +496,23 @@ settleOn window wanted = go (200 :: Int)
         threadDelay 20000
         drain window
         go (tries - 1)
+
+-- | Ask the kernel what it answers, and how many arguments each one takes.
+askOperations :: Window -> IO [(String, Int)]
+askOperations window = do
+  requestId <- reserve (windowKernel window)
+  sendRequest (windowKernel window) requestId (opName Operations)
+              (opArguments Operations)
+  waitFor requestId
+  where
+    waitFor requestId = do
+      replies <- takeReplies (windowKernel window)
+      case [ payload | Answered got payload <- replies, got == requestId ] of
+        (payload : _) -> pure
+          [ (name, fromIntegral n)
+          | Just entries <- [toList payload]
+          , Pair (Sym name) (Num n) <- entries ]
+        [] -> threadDelay 20000 >> waitFor requestId
 
 -- | Turn the loop over until the kernel owes no more answers.
 quiet :: Window -> IO Bool
@@ -494,8 +543,7 @@ quietEnv kernel poster = do
   windowRef <- newIORef Nothing
   toastsRef <- newIORef Nothing
   gestures <- newIORef M.empty
-  watcher <- newIORef Nothing
-  previews <- newIORef M.empty
+  editor <- newIORef Nothing
   tags <- newIORef M.empty
   stall <- newIORef Nothing
   pure Env
@@ -506,9 +554,8 @@ quietEnv kernel poster = do
     , envWindow = windowRef
     , envToasts = toastsRef
     , envGestures = gestures
-    , envWatcher = watcher
     , envTags = tags
-    , envPreviews = previews
+    , envEditor = editor
     , envRecentSection = error "the tests draw nothing, so there is no menu"
     , envStallDialog = stall
     }

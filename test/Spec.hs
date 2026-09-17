@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 -- | Tests for the Haskell shell.
 --
 -- The pure parts are checked in this process.  The client is checked against
@@ -28,7 +29,11 @@ import Cellar.Client
 import Cellar.Config
 import Data.List.NonEmpty (NonEmpty ((:|)))
 
+import Cellar.App.Effect
+import qualified Cellar.Op as Op
+import Cellar.App.Event
 import Cellar.App.State
+import Cellar.App.Update (update)
 import Cellar.External
 import Cellar.Grid.Model
 import Cellar.Protocol
@@ -428,6 +433,71 @@ main = do
   check failures "what a cell says is read from the sheet showing"
     (Just "1") (sourceOf (Ref 0 0)
        (withCurrentTab (\t -> t { tabSources = [("A1", "1")] }) showing))
+
+  -- What the window does about an event, rather than what it becomes.  The
+  -- update is a function of a state and an event alone now, so this needs no
+  -- window, no kernel and no folder: the effects it asks for are values, and
+  -- a test can read them.  Before, the only way to check that pressing Ctrl+-
+  -- deletes a row was to run a real kernel and watch the state that came back
+  -- some turns later.
+  section "what the window asks for"
+  let onSheet = showing { statePage = SheetPage }
+      asksFor event = case update onSheet event of
+        Stop -> []
+        Step _ doings -> doings
+      alistOf entries = list [ Pair (Sym k) v | (k, v) <- entries ]
+      stops event = case update onSheet event of
+        Stop -> True
+        Step _ _ -> False
+  check failures "deleting a row asks the kernel to delete it"
+    [Now (Request [(Op.Delete "Summary" Row 0, Snapshot (tabId first') Nothing)])]
+    (asksFor (Act (DeleteLine Row)))
+  check failures "and deleting a column says column"
+    [Now (Request [(Op.Delete "Summary" Column 0, Snapshot (tabId first') Nothing)])]
+    (asksFor (Act (DeleteLine Column)))
+  check failures "clearing a cell asks the kernel to empty it"
+    [Now (Request [(Op.SetCell "Summary" "A1" "", CellSet (tabId first') "A1")])]
+    (asksFor (Act ClearCell))
+  -- The one effect that goes out under a name, so that a drag costs one write
+  -- rather than one per frame.
+  check failures "a column resized asks for the layout, and waits first"
+    [Settle "layout:1" (SaveSheet "/home/nobody/book.cellar/sheets/Summary"
+                          (Sheet [] 10 4 [(1, 200)]))]
+    (asksFor (GridSaid (tabId first') (Resized (ColumnId 1) 200)))
+  check failures "a toast asks for a toast"
+    [Now (Notify "hello")] (asksFor (Toast "hello"))
+  check failures "an action with no sheet showing asks for nothing"
+    [] (case update showing (Act ClearCell) of
+          Stop -> [Now (Notify "reached")]
+          Step _ doings -> doings)
+  -- What is watched follows from what is open.  The window holds the list so
+  -- that the loop can start and stop the watching to match, which is why the
+  -- effect answers rather than going off and doing it.
+  check failures "opening a workbook asks for its folders to be watched"
+    True (Now (Watch here) `elem` asksFor
+            (WorkbookRead here AsUsual [("Summary", Sheet [] 10 4 [])] Nothing))
+  check failures "and the window holds what it was told is watched"
+    ["/one", "/two"]
+    (case update onSheet (Watching ["/one", "/two"]) of
+       Stop -> []
+       Step next _ -> stateWatching next)
+  -- The cell editor asks through the loop now, like everything else, and its
+  -- question comes back by number so that a late answer can be dropped.
+  check failures "the editor's question goes to the kernel"
+    [Now (Request [(Op.Preview "Summary" "A1" "(+ 1 1)", Previewing (tabId first') 7)])]
+    (asksFor (PreviewWanted (tabId first') (Ref 0 0) 7 "(+ 1 1)"))
+  check failures "and its answer goes back under the same number"
+    [Now (ShowPreview 7 "2" False)]
+    (asksFor (KernelSaid (Previewing (tabId first') 7)
+                (alistOf [("display", Str "2"), ("error", Bool False)])))
+  -- The kernel flags an error with a boolean, so reading it as a string said
+  -- no error every time and the Result line was never styled as one.
+  check failures "an error in a preview is carried as an error"
+    [Now (ShowPreview 7 "division by zero" True)]
+    (asksFor (KernelSaid (Previewing (tabId first') 7)
+                (alistOf [("display", Str "division by zero"), ("error", Bool True)])))
+  check failures "quitting stops" True (stops (Act Quit))
+  check failures "and closing the window stops too" True (stops WindowClosing)
 
   section "the store"
   root <- makeTemporaryDirectory
