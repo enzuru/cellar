@@ -202,6 +202,8 @@ gesturesFor env tab = do
 fromGesture :: TabId -> GridGesture -> Event
 fromGesture tab gesture = case gesture of
   LinePicked axis index -> LineChosen tab axis index
+  BlockGrewTo r -> BlockGrown tab r
+  LineExtended axis index -> LineReachedTo tab axis index
   DragBegan axis index -> DragBegun tab axis index
   DragMovedTo index -> DragMoved tab index
   DragDroppedOn index -> DragDropped tab index
@@ -380,6 +382,11 @@ shortcuts =
   , ("Ctrl+Alt+Up / Down", "Insert a row before or after the active one")
   , ("Ctrl+Alt+Left / Right", "Insert a column before or after the active one")
   , ("Ctrl+- / Ctrl+Alt+-", "Delete the active row or column")
+  , ("Shift and an arrow key", "Take a block of cells")
+  , ("Drag across the cells", "The same, with the mouse")
+  , ("Click a row number or a heading", "Take that whole row or column")
+  , ("Shift and a click on another", "Take every line between the two")
+  , ("Ctrl+=", "Sum the block, under it or beside it")
   , ("Right-click a row number or a column header", "The same inserts and deletes")
   , ("Ctrl+R", "Recalculate the sheet")
   , ("Ctrl+T", "Add a sheet to this workbook")

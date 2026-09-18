@@ -182,6 +182,26 @@ pushes the whole range down instead, and one opened below it leaves it alone.
 A sheet grows to fit what is read into it, so a file saved after an insert opens
 at the size it was saved at rather than being trimmed back to the default 100×26.
 
+## A block of cells, and a formula under it
+
+Drag across the cells to take a block of them, or hold Shift and use the
+arrow keys. Click a row number or a column heading to take that whole line, and
+Shift-click another to take every line between the two. The block is drawn in a
+faint wash, and the cell an edit would go into keeps its outline.
+
+With a block taken, Ctrl+= puts a sum after it, and the menus offer Sum,
+Average, Count, Minimum, Maximum and Product. Where the formula goes follows
+the shape of the block: a column of cells is totalled underneath it, a row of
+cells beside it, and a block wider and taller than one gets a formula per
+column in the row below.
+
+What lands in the cell is `(sum (range 'A1 'A4))`, an ordinary literal range,
+so it moves with its cells when a row is moved, inserted or deleted like any
+other reference. A block of one cell is named on its own: `(average 'A1)`.
+
+Dragging a row number or a column heading still reorders, as it always did.
+Selecting several of them is the Shift-click, not a drag.
+
 ## Taking rows and columns away
 
 Ctrl+- deletes the row the active cell is on and Ctrl+Alt+- deletes its column,
@@ -334,6 +354,8 @@ tell the two apart on sight.
 |Ctrl+Alt+Left/Right                |Insert a column before/after|
 |Ctrl+-                             |Delete the active row     |
 |Ctrl+Alt+-                         |Delete the active column  |
+|Shift with an arrow key            |Take a block of cells     |
+|Ctrl+=                             |Sum the block             |
 |Ctrl+R                             |Recalculate               |
 |Ctrl+T                             |Add a sheet to this workbook|
 |Ctrl+Shift+R                       |Rename the sheet showing  |

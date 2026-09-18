@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 -- | Everything that can happen to the window.
 --
 -- One type for the lot: a key in the grid, an answer from the kernel, a
@@ -6,6 +7,9 @@
 module Cellar.App.Event
   ( Event (..)
   , Opening (..)
+  , Aggregate (..)
+  , aggregateName
+  , aggregateLabel
   , Action (..)
   ) where
 
@@ -34,6 +38,8 @@ data Action
   | ClearCell
   | EditCell
   | OpenCellElsewhere
+    -- | Put a formula about the block into the cells after it.
+  | Formula Aggregate
   | MoveLine Axis Int
   | InsertLine Axis Bool
     -- | Take away the row or column the active cell is on.
@@ -48,6 +54,32 @@ data Action
 
 -- | Why a workbook is being opened, which is what decides two things a
 -- workbook cannot say for itself.
+-- | What a formula about a block of cells works out.  Each one is a procedure
+-- the kernel already answers to, so the name here is the name written into the
+-- cell.
+data Aggregate = Total | Average | Count | Smallest | Largest | Product
+  deriving (Eq, Show, Enum, Bounded)
+
+-- | What it is called in a cell.
+aggregateName :: Aggregate -> String
+aggregateName = \case
+  Total -> "sum"
+  Average -> "average"
+  Count -> "count"
+  Smallest -> "cell-min"
+  Largest -> "cell-max"
+  Product -> "product"
+
+-- | What it is called in a menu.
+aggregateLabel :: Aggregate -> String
+aggregateLabel = \case
+  Total -> "Sum"
+  Average -> "Average"
+  Count -> "Count"
+  Smallest -> "Minimum"
+  Largest -> "Maximum"
+  Product -> "Product"
+
 data Opening
   = AsUsual
     -- ^ Somebody asked for this workbook, so it joins the list of the ones
@@ -129,4 +161,9 @@ data Event
     -- | The cell editor wants to know what this half-written expression comes
     -- to.  The number is the editor's own, and comes back with the answer.
   | PreviewWanted TabId Ref Int String
+    -- | A drag across the cells reached this one, so the block grows to it.
+  | BlockGrown TabId Ref
+    -- | Shift and a click on a row number or a heading, which takes the block
+    -- out to that whole line.
+  | LineReachedTo TabId Axis Int
   deriving (Eq, Show)

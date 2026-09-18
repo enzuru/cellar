@@ -165,7 +165,7 @@ tests window root = do
     -- Delete on a cell is the grid asking for it to be cleared, which is the
     -- same round trip a cell being written is.
     happens window (GridSaid (tabId tab) (Pressed (Ref 0 0) 1))
-    happens window (GridSaid (tabId tab) (KeyDown keyDelete))
+    happens window (GridSaid (tabId tab) (KeyDown keyDelete False))
     emptied <- settle window $ \s -> case tabById (tabId tab) s of
       Nothing -> False
       Just found -> null (tabSources found)
@@ -213,6 +213,24 @@ tests window root = do
     happens window (Act RecalculateSheet)
     again <- settle window (holds (tabId tab) (Ref 1 0) "")
     check window "recalculating leaves the sheet saying the same thing" True again
+
+  section "a formula about a block"
+  summing <- stateOf window
+  forM_ (currentTab summing) $ \tab -> do
+    forM_ [(0, "2"), (1, "3"), (2, "4")] $ \(row, text) ->
+      happens window (CellEdited (tabId tab) (Ref row 0) text)
+    _ <- settle window (holds (tabId tab) (Ref 2 0) "4")
+    -- Take the three of them, the way Shift and an arrow key does.
+    happens window (GridSaid (tabId tab) (Pressed (Ref 0 0) 1))
+    happens window (GridSaid (tabId tab) (KeyDown keyDown True))
+    happens window (GridSaid (tabId tab) (KeyDown keyDown True))
+    happens window (Act (Formula Total))
+    totalled <- settle window (holds (tabId tab) (Ref 3 0) "9")
+    check window "summing a block puts the total under it" True totalled
+    _ <- quiet window
+    written <- readFile (cellFilePath (sales </> "sheets" </> "Summary") "A4")
+    check window "and the cell holds a range, not the numbers"
+      "(sum (range 'A1 'A3))" (takeWhile (/= '\n') written)
 
   section "the tabs"
   happens window (SheetNamed Nothing "Q2")
@@ -434,6 +452,10 @@ resolved path = do
 -- nothing.  GDK_KEY_Delete is 0xffff, and has been since X11.
 keyDelete :: Word32
 keyDelete = 0xffff
+
+-- | GDK_KEY_Down, likewise.
+keyDown :: Word32
+keyDown = 0xff54
 
 --
 -- Driving the window

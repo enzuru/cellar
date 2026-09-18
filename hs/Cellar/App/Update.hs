@@ -89,6 +89,14 @@ update state = \case
           moved = withTab tab (\t -> t { tabGrid = model }) state
       in Step moved (concatMap (carrying moved tab) outs)
 
+  BlockGrown tab r -> stay $ withTab tab
+    (\t -> t { tabGrid = fromMaybe (tabGrid t) (stretchTo r (tabGrid t)) })
+    state
+
+  LineReachedTo tab axis index -> stay $ withTab tab
+    (\t -> t { tabGrid = fromMaybe (tabGrid t) (stretchLine axis index (tabGrid t)) })
+    state
+
   LineChosen tab axis index -> stay $ withTab tab
     (\t -> t { tabGrid = fromMaybe (tabGrid t) (selectLine axis index (tabGrid t)) })
     state
@@ -512,6 +520,16 @@ sheetFolder state tab = do
 emptySheet :: Sheet
 emptySheet = Sheet [] defaultRows defaultColumns []
 
+-- | What goes into the cell: @(sum (range 'A1 'A5))@, which the kernel already
+-- reads and which the reference rewriting already carries through a move, an
+-- insert or a delete, because it is an ordinary literal range.
+formulaFor :: Aggregate -> (Ref, Ref) -> String
+formulaFor aggregate (from, to)
+  | from == to = "(" ++ aggregateName aggregate ++ " " ++ quoted from ++ ")"
+  | otherwise = "(" ++ aggregateName aggregate
+                ++ " (range " ++ quoted from ++ " " ++ quoted to ++ "))"
+  where quoted r = "'" ++ refName r
+
 -- | Hand a sheet over to the kernel.  A sheet is at least the ordinary size on
 -- screen, even when it was saved smaller.
 opening :: String -> Sheet -> Op
@@ -597,6 +615,16 @@ acting state = \case
         Row -> "A sheet has to keep one row"
         Column -> "A sheet has to keep one column"
       Just (model, command) -> asked' tab model command
+
+  -- A formula about the block, in the cells after it.  One request carrying
+  -- every cell it writes, so a block of columns is one round trip.
+  Formula aggregate -> onSheet $ withSheet $ \tab ->
+    case formulaPlaces (tabGrid tab) of
+      [] -> after state (Notify "There is no room for that below the block")
+      places -> Step state
+        [ Now (Request [ ( Op.SetCell (tabName tab) (refName at) (formulaFor aggregate block)
+                         , CellSet (tabId tab) (refName at) )
+                       | (at, block) <- places ]) ]
 
   OpenRecentAt path -> after state (ReadWorkbookAt path AsUsual)
 

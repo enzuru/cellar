@@ -280,6 +280,17 @@ installActions env application = do
   -- Ctrl+Alt+- for the column rather than Ctrl+Shift+-.  The shifted one
   -- parses and then never fires: on a US layout the keyval under Shift is
   -- underscore, not minus, so the shortcut is waiting for a key nobody sends.
+  -- A formula about the block, one action each so that a menu item and a
+  -- shortcut can name it.  Ctrl+= for the sum, which is the one people reach
+  -- for, and the rest live in the menus.
+  --
+  -- No Shift in that accelerator, on purpose.  A shortcut written with Shift
+  -- and a punctuation key parses and then never fires, because the keyval
+  -- under Shift is a different one; Ctrl+Shift+- was found that way.
+  forM_ [minBound .. maxBound] $ \aggregate ->
+    define ("formula-" <> T.pack (aggregateName aggregate))
+           [ "<Control>equal" | aggregate == Total ]
+           (Formula aggregate)
   define "delete-row" ["<Control>minus"] (DeleteLine Row)
   define "delete-column" ["<Control><Alt>minus"] (DeleteLine Column)
   define "clear-recent" [] ClearRecent

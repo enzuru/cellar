@@ -228,7 +228,8 @@ main = do
   check failures "a taller view grows it"
     20 (modelRows (withView (emptyView 20 4) start))
 
-  let pressKey key model = gridEvent (KeyDown key) model
+  let pressKey key model = gridEvent (KeyDown key False) model
+      shiftKey key model = gridEvent (KeyDown key True) model
   check failures "Down moves the active cell down"
     (Ref 1 0) (modelActive (fst (pressKey Gdk.KEY_Down start)))
   check failures "and the top row is as far up as it goes"
@@ -317,6 +318,59 @@ main = do
   -- or a resize, which the smoke scripts drive through real widgets and which
   -- are worth pinning down here as well, because here they are arithmetic.
   section "the grid, further in"
+  -- The block: the rectangle between the anchor and the active cell.  A grid
+  -- with nothing selected has both on one cell, so every reader has one case.
+  check failures "a fresh grid has a block of one"
+    (Ref 0 0, Ref 0 0) (selectionOf start)
+  check failures "moving the active cell takes the block with it"
+    (Ref 1 0, Ref 1 0) (selectionOf (fst (pressKey Gdk.KEY_Down start)))
+  check failures "Shift and a key grows the block instead"
+    (Ref 0 0, Ref 2 0)
+    (selectionOf (fst (shiftKey Gdk.KEY_Down (fst (shiftKey Gdk.KEY_Down start)))))
+  check failures "and grows it the other way too"
+    (Ref 0 0, Ref 1 1)
+    (selectionOf (fst (shiftKey Gdk.KEY_Right (fst (shiftKey Gdk.KEY_Down start)))))
+  -- The anchor does not move, so a block can be grown back through where it
+  -- started and out the other side.
+  check failures "a block grown upwards from the middle keeps its corners in order"
+    (Ref 1 0, Ref 2 0)
+    (selectionOf (fst (shiftKey Gdk.KEY_Up
+       (fst (pressKey Gdk.KEY_Down (fst (pressKey Gdk.KEY_Down start)))))))
+  check failures "a plain move after a block collapses it"
+    (Ref 1 0, Ref 1 0)
+    (selectionOf (fst (pressKey Gdk.KEY_Up
+       (fst (shiftKey Gdk.KEY_Down (fst (shiftKey Gdk.KEY_Down start)))))))
+  check failures "a cell inside the block says so"
+    [True, True, False]
+    (let grown = fst (shiftKey Gdk.KEY_Down (fst (shiftKey Gdk.KEY_Right start)))
+     in map (`withinSelection` grown) [Ref 0 0, Ref 1 1, Ref 2 0])
+  -- Clicking a heading takes the whole column, which is what dragging across
+  -- several of them is built out of.
+  check failures "a column heading takes the whole column"
+    (Just (Ref 0 2, Ref 9 2)) (selectionOf <$> selectLine Column 2 start)
+  check failures "and a row number takes the whole row"
+    (Just (Ref 3 0, Ref 3 3)) (selectionOf <$> selectLine Row 3 start)
+
+  -- Where a formula about the block goes, and what it is about.
+  let blockOf a b = fromMaybe start (stretchTo b (fromMaybe start (withActive a start)))
+  check failures "a column of cells is totalled underneath it"
+    [(Ref 5 0, (Ref 0 0, Ref 4 0))]
+    (formulaPlaces (blockOf (Ref 0 0) (Ref 4 0)))
+  check failures "a row of cells is totalled beside it"
+    [(Ref 0 3, (Ref 0 0, Ref 0 2))]
+    (formulaPlaces (blockOf (Ref 0 0) (Ref 0 2)))
+  check failures "and a block gets one formula per column"
+    [ (Ref 3 0, (Ref 0 0, Ref 2 0))
+    , (Ref 3 1, (Ref 0 1, Ref 2 1))
+    , (Ref 3 2, (Ref 0 2, Ref 2 2)) ]
+    (formulaPlaces (blockOf (Ref 0 0) (Ref 2 2)))
+  check failures "a single cell is totalled underneath it too"
+    [(Ref 2 1, (Ref 1 1, Ref 1 1))]
+    (formulaPlaces (blockOf (Ref 1 1) (Ref 1 1)))
+  -- The formula has to land on the sheet, and this one is against the bottom.
+  check failures "a block with no room under it gets no formula"
+    [] (formulaPlaces (blockOf (Ref 8 0) (Ref 9 0)))
+
   check failures "picking a line moves the active cell along it"
     (Just (Ref 7 0)) (modelActive <$> selectLine Row 7 start)
   check failures "and along the other one"
@@ -446,6 +500,11 @@ main = do
         Stop -> []
         Step _ doings -> doings
       alistOf entries = list [ Pair (Sym k) v | (k, v) <- entries ]
+      -- The sheet showing, with a block taken from one corner to the other.
+      block a b = withCurrentTab
+        (\t -> t { tabGrid = fromMaybe (tabGrid t)
+                     (stretchTo b (fromMaybe (tabGrid t) (withActive a (tabGrid t)))) })
+        onSheet
       stops event = case update onSheet event of
         Stop -> True
         Step _ _ -> False
@@ -496,6 +555,21 @@ main = do
     [Now (ShowPreview 7 "division by zero" True)]
     (asksFor (KernelSaid (Previewing (tabId first') 7)
                 (alistOf [("display", Str "division by zero"), ("error", Bool True)])))
+  -- A formula about the block, in the cells after it.  One request carrying
+  -- every cell it writes, so a block of columns is one round trip.
+  check failures "summing a block asks for one cell per column"
+    [Now (Request
+      [ (Op.SetCell "Summary" "A3" "(sum (range 'A1 'A2))", CellSet (tabId first') "A3")
+      , (Op.SetCell "Summary" "B3" "(sum (range 'B1 'B2))", CellSet (tabId first') "B3") ])]
+    (case update (block (Ref 0 0) (Ref 1 1)) (Act (Formula Total)) of
+       Stop -> []
+       Step _ doings -> doings)
+  check failures "and a single cell is named on its own, without a range"
+    [Now (Request
+      [ (Op.SetCell "Summary" "A2" "(average 'A1)", CellSet (tabId first') "A2") ])]
+    (case update (block (Ref 0 0) (Ref 0 0)) (Act (Formula Average)) of
+       Stop -> []
+       Step _ doings -> doings)
   check failures "quitting stops" True (stops (Act Quit))
   check failures "and closing the window stops too" True (stops WindowClosing)
 

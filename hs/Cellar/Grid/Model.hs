@@ -34,6 +34,11 @@ module Cellar.Grid.Model
   , withPalette
   , paletteFor
   , withActive
+  , stretchTo
+  , stretchLine
+  , selectionOf
+  , formulaPlaces
+  , withinSelection
   , withWidths
   , withDrag
   , columnWidths
@@ -113,6 +118,11 @@ data GridModel = GridModel
   , modelNextColumn :: ColumnId
     -- ^ The identifier the next column to appear will take.
   , modelActive :: Ref
+    -- | Where the block being worked on started.  The block is the rectangle
+    -- between this and the active cell, and the active cell is the corner
+    -- that moves.  A grid with nothing selected has both on one cell, which is
+    -- a block of one, so there is one case here rather than two.
+  , modelAnchor :: Ref
   , modelWidths :: M.Map ColumnId Int
     -- | The colours the stylesheet knows about.  A cell can ask to be drawn in
     -- any colour it likes, and GTK has no way to set one on a widget except
@@ -132,6 +142,7 @@ newGridModel view = GridModel
   , modelColumns = map ColumnId [0 .. viewColumns view - 1]
   , modelNextColumn = ColumnId (viewColumns view)
   , modelActive = Ref 0 0
+  , modelAnchor = Ref 0 0
   , modelWidths = M.empty
   , modelPalette = M.empty
   , modelDrag = Nothing
@@ -142,7 +153,9 @@ newGridModel view = GridModel
 data GridEvent
   = Pressed Ref Int32      -- ^ A cell was clicked, and how many times.
   | Resized ColumnId Int32
-  | KeyDown Word32
+  | KeyDown Word32 Bool
+    -- ^ The key, and whether Shift was held, which is what grows the block
+    -- rather than moving it.
   deriving (Eq, Show)
 
 --
@@ -163,10 +176,10 @@ gridEvent event model = case event of
     ( model { modelWidths = M.insert identifier (fromIntegral width) (modelWidths model) }
     , [Ask Layout]
     )
-  KeyDown keyval -> keyDown keyval model
+  KeyDown keyval shifted -> keyDown keyval shifted model
 
-keyDown :: Word32 -> GridModel -> (GridModel, [GridOut])
-keyDown keyval model
+keyDown :: Word32 -> Bool -> GridModel -> (GridModel, [GridOut])
+keyDown keyval shifted model
   | keyval == Gdk.KEY_Left = moveActive 0 (-1)
   | keyval == Gdk.KEY_Right = moveActive 0 1
   | keyval == Gdk.KEY_Up = moveActive (-1) 0
@@ -183,12 +196,15 @@ keyDown keyval model
       (model, [Ask (Clear (modelActive model))])
   | otherwise = (model, [])
   where
+    -- With Shift the anchor stays where it is and the block grows; without it
+    -- the block collapses onto wherever the active cell went.
     moveActive rowDelta columnDelta =
       let view = modelView model
           Ref row column = modelActive model
           row' = clamp (row + rowDelta) 0 (viewRows view - 1)
           column' = clamp (column + columnDelta) 0 (viewColumns view - 1)
-          moved = fromMaybe model (withActive (Ref row' column') model)
+          going = if shifted then stretchTo else withActive
+          moved = fromMaybe model (going (Ref row' column') model)
       in (scrollTo row' moved, [])
 
 -- | Whether a key is one the grid answers.  A key it answers is one it stops,
@@ -233,17 +249,76 @@ withView view model = model
 -- with looks like.
 withActive :: Ref -> GridModel -> Maybe GridModel
 withActive r model
+  | viewHolds (modelView model) r = Just model { modelActive = r, modelAnchor = r }
+  | otherwise = Nothing
+
+-- | Move the active cell and leave the anchor, which is what grows the block.
+stretchTo :: Ref -> GridModel -> Maybe GridModel
+stretchTo r model
   | viewHolds (modelView model) r = Just model { modelActive = r }
   | otherwise = Nothing
 
--- | Put the active cell on a row or column, keeping the other half of the
--- reference where it is.
+-- | Take a whole row or column: the anchor to one end of it and the active
+-- cell to the other.
 selectLine :: Axis -> Int -> GridModel -> Maybe GridModel
-selectLine axis index model =
+selectLine axis index model
+  | not (viewHolds view corner) = Nothing
+  | otherwise = Just model { modelActive = corner, modelAnchor = far }
+  where
+    view = modelView model
+    (corner, far) = case axis of
+      Row -> (Ref index 0, Ref index (viewColumns view - 1))
+      Column -> (Ref 0 index, Ref (viewRows view - 1) index)
+
+-- | Take the block out to a whole row or column, keeping the anchor.
+--
+-- With the anchor at the top of column A and the active cell at its foot,
+-- reaching out to column C is the three columns whole, which is what Shift and
+-- a click on a heading means.
+stretchLine :: Axis -> Int -> GridModel -> Maybe GridModel
+stretchLine axis index model =
   let Ref row column = modelActive model
-  in withActive (case axis of
-                   Row -> Ref index column
-                   Column -> Ref row index) model
+  in stretchTo (case axis of
+                  Row -> Ref index column
+                  Column -> Ref row index) model
+
+-- | The corners of the block, the top left one first.
+selectionOf :: GridModel -> (Ref, Ref)
+selectionOf model =
+  let Ref aRow aColumn = modelAnchor model
+      Ref bRow bColumn = modelActive model
+  in ( Ref (min aRow bRow) (min aColumn bColumn)
+     , Ref (max aRow bRow) (max aColumn bColumn) )
+
+-- | Where a formula about the block goes, and the block each one is about.
+--
+-- A block one column wide is totalled underneath it, a block one row tall to
+-- its right, and anything bigger gets one formula per column in the row below.
+-- That is what the other spreadsheets do, and it is what somebody who has just
+-- dragged across three columns of numbers means.
+--
+-- Empty when there is no room: the formula has to land on the sheet.
+formulaPlaces :: GridModel -> [(Ref, (Ref, Ref))]
+formulaPlaces model
+  | left == right && top /= bottom = below left
+  | top == bottom && left /= right = beside top
+  | top == bottom && left == right = below left
+  | otherwise = concatMap below ([left .. right] :: [Int])
+  where
+    (Ref top left, Ref bottom right) = selectionOf model
+    view = modelView model
+    below column =
+      [ (Ref (bottom + 1) column, (Ref top column, Ref bottom column))
+      | viewHolds view (Ref (bottom + 1) column) ]
+    beside row =
+      [ (Ref row (right + 1), (Ref row left, Ref row right))
+      | viewHolds view (Ref row (right + 1)) ]
+
+-- | Whether a cell is inside the block.
+withinSelection :: Ref -> GridModel -> Bool
+withinSelection (Ref row column) model =
+  let (Ref top left, Ref bottom right) = selectionOf model
+  in row >= top && row <= bottom && column >= left && column <= right
 
 -- | Bring a row into sight.  The library scrolls when the value it is given
 -- differs from the one before, so a grid that stays where it is stays put.
@@ -480,7 +555,9 @@ gridView handlers model =
       -- moving its own cursor, and a handler that sees them afterwards is
       -- answering a question already settled.
       , onController capturingKeys #keyPressed
-          (\keyval _ _ -> (handledKey keyval, KeyDown keyval))
+          (\keyval _ state ->
+             ( handledKey keyval
+             , KeyDown keyval (Gdk.ModifierTypeShiftMask `elem` state) ))
       , afterCreated (onViewBuilt handlers)
       ]
       (CV.defaultColumnViewParams columns)
@@ -549,6 +626,8 @@ drawRow model row = RowDraw
            , cellStyles = concat
                ([ ["cellar-cell"]
                 , ["cellar-active" | r == modelActive model]
+                , [ "cellar-selected"
+                  | r /= modelActive model, withinSelection r model ]
                 , ["cellar-error" | isJust failure]
                 , [ name
                   | Just found' <- [found]

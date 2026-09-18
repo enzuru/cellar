@@ -44,6 +44,9 @@ import Cellar.Ref
 -- with no opinion about what the sheet should do next.
 data GridGesture
   = LinePicked Axis Int         -- ^ A right-click on a row number or a heading.
+  | BlockGrewTo Ref             -- ^ A drag across the cells reached this one.
+  | LineExtended Axis Int       -- ^ Shift and a click on a row number or a
+                                -- heading, which takes the block out to it.
   | DragBegan Axis Int          -- ^ A drag started on the line at this index.
   | DragMovedTo Int             -- ^ It is now over this one.
   | DragDroppedOn Int           -- ^ And it was let go over this one.
@@ -61,6 +64,9 @@ data Drag = Drag
   , dragWidget :: Gtk.Widget
   , dragStartX :: Double
   , dragStartY :: Double
+    -- | The line the drag started on, which is what a click that goes
+    -- nowhere ends up back on.
+  , dragFrom :: Int
   , dragTarget :: Int
   }
 
@@ -111,9 +117,45 @@ gestureDragShown gestures drag = do
     setCssClass title "cellar-drag-source" source
     setCssClass title "cellar-drag-target" target
 
+-- | Drag across the cells to take a block of them.
+--
+-- One gesture on the whole view rather than one per cell.  A press sets up an
+-- implicit grab, so the cells the pointer crosses afterwards hear nothing at
+-- all, and a motion controller on each of them would never fire.
+--
+-- Which cell the pointer is over is asked of GTK with `gtk_widget_pick`
+-- rather than worked out from a row height and a scroll offset.  The widget it
+-- hands back is the label the grid drew, and a label knows which cell it
+-- stands for, because its name says so.
+--
+-- Bubble phase, so that a drag beginning on a row number or a column heading
+-- is a reorder as it always was: those gestures claim the sequence first, and
+-- a claimed sequence cancels this one.
+installBlockDrag :: Gestures -> Gtk.ColumnView -> IO ()
+installBlockDrag gestures columnView' = do
+  handed <- Gtk.gestureDragNew
+  gesture <- retain Gtk.GestureDrag handed
+  Gtk.gestureSingleSetButton gesture 1
+  widget' <- Gtk.toWidget columnView'
+  _ <- GI.on gesture #dragUpdate $ \offsetX offsetY -> do
+    (known, startX, startY) <- Gtk.gestureDragGetStartPoint gesture
+    when known $ do
+      found <- cellUnder widget' (startX + offsetX) (startY + offsetY)
+      forM_ found (gesturePost gestures . BlockGrewTo)
+  Gtk.widgetAddController widget' handed
+
+-- | The cell under this point, or nothing when the point is not on one.
+cellUnder :: Gtk.Widget -> Double -> Double -> IO (Maybe Ref)
+cellUnder widget' x y = do
+  picked <- Gtk.widgetPick widget' x y [Gtk.PickFlagsDefault]
+  case picked of
+    Nothing -> pure Nothing
+    Just found -> refOf found
+
 takeColumnView :: Gestures -> Gtk.ColumnView -> IO ()
 takeColumnView gestures view = do
   writeIORef (gestureView gestures) (Just view)
+  installBlockDrag gestures view
   wireHeaderRow gestures
   -- The header row does not exist until the view is realised.
   void (GI.on view #realize (wireHeaderRow gestures))
@@ -199,7 +241,13 @@ installRowDrag gestures label = do
   gesture <- retain Gtk.GestureDrag handed
   _ <- GI.on gesture #dragBegin $ \x y -> do
     found <- rowOf label
+    held <- Gtk.eventControllerGetCurrentEventState gesture
     case found of
+      -- Shift means the block, not a reorder: dragging a row number has meant
+      -- moving that row since before there was a block to take.
+      Just position | Gdk.ModifierTypeShiftMask `elem` held -> do
+        _ <- Gtk.gestureSetState gesture Gtk.EventSequenceStateClaimed
+        gesturePost gestures (LineExtended Row position)
       Just position -> do
         _ <- Gtk.gestureSetState gesture Gtk.EventSequenceStateClaimed
         beginDrag gestures Row position label x y
@@ -244,13 +292,17 @@ installColumnDrag gestures row = do
   Gtk.eventControllerSetPropagationPhase gesture Gtk.PropagationPhaseCapture
   _ <- GI.on gesture #dragBegin $ \x y -> do
     found <- headerUnder gestures x
+    held <- Gtk.eventControllerGetCurrentEventState gesture
     case found of
       Just (position, left, width)
         -- Near either edge the user is resizing the column, which is GTK's
         -- gesture on this same widget.  Stay out of its way.
         | x - left > resizeMargin && x - left < width - resizeMargin -> do
             _ <- Gtk.gestureSetState gesture Gtk.EventSequenceStateClaimed
-            beginDrag gestures Column position row x y
+            -- Shift means the block, not a reorder.
+            if Gdk.ModifierTypeShiftMask `elem` held
+              then gesturePost gestures (LineExtended Column position)
+              else beginDrag gestures Column position row x y
       _ -> void (Gtk.gestureSetState gesture Gtk.EventSequenceStateDenied)
   _ <- GI.on gesture #dragUpdate (updateDrag gestures)
   _ <- GI.on gesture #dragEnd (finishDrag gestures)
@@ -283,7 +335,7 @@ headerUnder gestures x = do
 
 beginDrag :: Gestures -> Axis -> Int -> Gtk.Widget -> Double -> Double -> IO ()
 beginDrag gestures axis from widget' x y = do
-  writeIORef (gestureDrag gestures) (Just (Drag axis widget' x y from))
+  writeIORef (gestureDrag gestures) (Just (Drag axis widget' x y from from))
   gesturePost gestures (DragBegan axis from)
 
 updateDrag :: Gestures -> Double -> Double -> IO ()
@@ -295,6 +347,12 @@ updateDrag gestures offsetX offsetY = do
       writeIORef (gestureDrag gestures) (Just drag { dragTarget = landing })
       gesturePost gestures (DragMovedTo landing)
 
+-- | A drag let go.
+--
+-- A press on a row number or a heading that never went anywhere is a click,
+-- and a click takes that whole line.  GTK gives a drag gesture its
+-- @drag-begin@ the moment the button goes down, so there is no way to tell a
+-- click from a drag until it ends, which is here.
 finishDrag :: Gestures -> Double -> Double -> IO ()
 finishDrag gestures offsetX offsetY = do
   current <- readIORef (gestureDrag gestures)
@@ -302,7 +360,11 @@ finishDrag gestures offsetX offsetY = do
     target <- dragTargetAt gestures drag offsetX offsetY
     let landing = fromMaybe (dragTarget drag) target
     writeIORef (gestureDrag gestures) Nothing
-    gesturePost gestures (DragDroppedOn landing)
+    if landing == dragFrom drag
+      then do
+        gesturePost gestures DragGaveUp
+        gesturePost gestures (LinePicked (dragAxis drag) landing)
+      else gesturePost gestures (DragDroppedOn landing)
 
 cancelDrag :: Gestures -> IO ()
 cancelDrag gestures = do
