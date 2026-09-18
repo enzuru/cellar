@@ -60,6 +60,6 @@ stdenv.mkDerivation {
 
   meta = {
     description = "The evaluator behind Cellar: sheets of Guile expressions";
-    license = lib.licenses.gpl3Only;
+    license = lib.licenses.gpl3Plus;
   };
 }

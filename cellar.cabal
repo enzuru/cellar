@@ -7,7 +7,7 @@ description:
   The other half -- the kernel, which holds the sheets and evaluates the
   cells -- is a Guile program this one starts and talks to over a pipe.
 
-license:            GPL-3.0-only
+license:            GPL-3.0-or-later
 license-file:       LICENSE
 copyright:          (c) 2026 Elias Khanzada
 author:             Elias Khanzada

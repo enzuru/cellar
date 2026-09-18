@@ -92,6 +92,6 @@ stdenv.mkDerivation {
 
   meta = {
     description = "A spreadsheet whose cells are Guile expressions";
-    license = lib.licenses.gpl3Only;
+    license = lib.licenses.gpl3Plus;
   };
 }

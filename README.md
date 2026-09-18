@@ -720,9 +720,13 @@ Things worth knowing if you extend this:
 
 ## Licence
 
-Cellar is free software under the GNU General Public License, version 3. The
-full text is in `LICENSE`. Both halves are covered: the Haskell shell and the
-Guile kernel are one program that happens to run in two processes.
+Cellar is free software. You can redistribute it and modify it under the terms
+of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version. The
+text of version 3 is in `LICENSE`.
+
+Both halves are covered. The Haskell shell and the Guile kernel are one program
+that happens to run in two processes.
 
 Everything Cellar is built from allows this. GTK 4, libadwaita and Guile are
 under the LGPL, and so are the `haskell-gi` bindings that reach them. The
@@ -734,9 +738,12 @@ section 3.3 of that licence allows it.
 
 There is no GPL header at the top of each source file. Those files open with a
 paragraph about what the module is for, which is what they are read for, and a
-notice repeated sixty times would bury it. The licence is declared once in
-`LICENSE`, once in `cellar.cabal`, once in each Nix derivation, and once in the
-About dialog.
+notice repeated sixty times would bury it. The grant above is the one that says
+*or any later version*, since `LICENSE` carries the text of version 3 and says
+nothing about later ones. The licence is also declared in `cellar.cabal`, in
+each Nix derivation, and in the About dialog, which has said
+`GTK_LICENSE_GPL_3_0` all along; that is GTK's name for version 3 or later, and
+it now agrees with the rest.
 
 ## What has been verified
 
