@@ -28,16 +28,15 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Data.GI.Base (GObject, ManagedPtr, unsafeCastTo)
 import qualified Data.GI.Base as GI
-import Data.GI.Base.Overloading (IsDescendantOf)
 import qualified GI.Gdk as Gdk
-import qualified GI.GObject as GObject
 import qualified GI.Gio as Gio
 import qualified GI.Graphene as Graphene
 import qualified GI.Gtk as Gtk
 
 import Cellar.Grid.Model (GridHandlers (..))
+import GI.Gtk.Declarative.EventController (addOwnedController)
+
 import Cellar.Ref
 
 -- | What a gesture noticed.  Every one of these is a fact about the widgets,
@@ -133,16 +132,14 @@ gestureDragShown gestures drag = do
 -- a claimed sequence cancels this one.
 installBlockDrag :: Gestures -> Gtk.ColumnView -> IO ()
 installBlockDrag gestures columnView' = do
-  handed <- Gtk.gestureDragNew
-  gesture <- retain Gtk.GestureDrag handed
-  Gtk.gestureSingleSetButton gesture 1
   widget' <- Gtk.toWidget columnView'
-  _ <- GI.on gesture #dragUpdate $ \offsetX offsetY -> do
+  gesture <- addOwnedController widget' =<< Gtk.gestureDragNew
+  Gtk.gestureSingleSetButton gesture 1
+  void $ GI.on gesture #dragUpdate $ \offsetX offsetY -> do
     (known, startX, startY) <- Gtk.gestureDragGetStartPoint gesture
     when known $ do
       found <- cellUnder widget' (startX + offsetX) (startY + offsetY)
       forM_ found (gesturePost gestures . BlockGrewTo)
-  Gtk.widgetAddController widget' handed
 
 -- | The cell under this point, or nothing when the point is not on one.
 cellUnder :: Gtk.Widget -> Double -> Double -> IO (Maybe Ref)
@@ -198,15 +195,14 @@ rowOf widget' = do
 -- covers every column.
 installLineClickOn :: Gestures -> Gtk.Widget -> Axis -> IO (Maybe Int) -> IO ()
 installLineClickOn gestures label axis locate = forM_ (gestureMenu gestures) $ \model -> do
-  handed <- Gtk.gestureClickNew
-  gesture <- retain Gtk.GestureClick handed
+  gesture <- addOwnedController label =<< Gtk.gestureClickNew
   Gtk.gestureSingleSetButton gesture 3
   -- Capture, not bubble, because of where this ends up: a column heading is a
   -- GtkButton of GTK's own with a right-click gesture already on it, for the
   -- header menu a column can carry.  A gesture on the row that waits its turn
   -- never hears the press at all.
   Gtk.eventControllerSetPropagationPhase gesture Gtk.PropagationPhaseCapture
-  _ <- GI.on gesture #pressed $ \_ x y -> do
+  void $ GI.on gesture #pressed $ \_ x y -> do
     told <- locate
     found <- case told of
       Just index -> pure (Just index)
@@ -224,7 +220,6 @@ installLineClickOn gestures label axis locate = forM_ (gestureMenu gestures) $ \
       Gdk.setRectangleHeight rectangle 1
       Gtk.popoverSetPointingTo popover (Just rectangle)
       Gtk.popoverPopup popover
-  Gtk.widgetAddController label handed
 
 --
 -- Dragging a row or a column
@@ -237,8 +232,7 @@ resizeMargin = 8
 
 installRowDrag :: Gestures -> Gtk.Widget -> IO ()
 installRowDrag gestures label = do
-  handed <- Gtk.gestureDragNew
-  gesture <- retain Gtk.GestureDrag handed
+  gesture <- addOwnedController label =<< Gtk.gestureDragNew
   _ <- GI.on gesture #dragBegin $ \x y -> do
     found <- rowOf label
     held <- Gtk.eventControllerGetCurrentEventState gesture
@@ -254,8 +248,7 @@ installRowDrag gestures label = do
       Nothing -> void (Gtk.gestureSetState gesture Gtk.EventSequenceStateDenied)
   _ <- GI.on gesture #dragUpdate (updateDrag gestures)
   _ <- GI.on gesture #dragEnd (finishDrag gestures)
-  _ <- GI.on gesture #cancel (\_ -> cancelDrag gestures)
-  Gtk.widgetAddController label handed
+  void $ GI.on gesture #cancel (\_ -> cancelDrag gestures)
 
 -- | Give the header row its gestures, once.
 --
@@ -284,8 +277,7 @@ wireHeaderRow gestures = do
 
 installColumnDrag :: Gestures -> Gtk.Widget -> IO ()
 installColumnDrag gestures row = do
-  handed <- Gtk.gestureDragNew
-  gesture <- retain Gtk.GestureDrag handed
+  gesture <- addOwnedController row =<< Gtk.gestureDragNew
   -- Capture, not bubble.  A header has gestures of GTK's own -- one of them
   -- claims the sequence as soon as the pointer moves, and a bubble-phase
   -- gesture here sees the press and then nothing at all.
@@ -306,8 +298,7 @@ installColumnDrag gestures row = do
       _ -> void (Gtk.gestureSetState gesture Gtk.EventSequenceStateDenied)
   _ <- GI.on gesture #dragUpdate (updateDrag gestures)
   _ <- GI.on gesture #dragEnd (finishDrag gestures)
-  _ <- GI.on gesture #cancel (\_ -> cancelDrag gestures)
-  Gtk.widgetAddController row handed
+  void $ GI.on gesture #cancel (\_ -> cancelDrag gestures)
 
 -- | The column whose header is at this point across the header row, with
 -- where that header starts and how wide it is.
@@ -493,17 +484,6 @@ setCssClass :: Gtk.Widget -> Text -> Bool -> IO ()
 setCssClass widget' name wanted
   | wanted = Gtk.widgetAddCssClass widget' name
   | otherwise = Gtk.widgetRemoveCssClass widget' name
-
--- | Keep a reference of our own to a controller before handing it to a widget.
---
--- @gtk_widget_add_controller@ takes ownership, so haskell-gi disowns the value
--- passed to it.  Every gesture above then goes on to call @gestureSetState@
--- from inside its own callbacks -- which would be reading a pointer we no
--- longer hold, and which haskell-gi warns about at runtime as "accessing a
--- disowned pointer".
-retain :: (GObject a, IsDescendantOf GObject.Object a)
-       => (ManagedPtr a -> a) -> a -> IO a
-retain constructor object = GObject.objectRef object >>= unsafeCastTo constructor
 
 -- | Every widget after this one among its siblings.
 siblingsAfter :: Gtk.Widget -> IO [Gtk.Widget]
