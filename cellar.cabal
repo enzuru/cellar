@@ -8,6 +8,10 @@ description:
   cells -- is a Guile program this one starts and talks to over a pipe.
 
 license:            GPL-3.0-only
+license-file:       LICENSE
+copyright:          (c) 2026 Elias Khanzada
+author:             Elias Khanzada
+maintainer:         lenzuru@gmail.com
 build-type:         Simple
 
 common warnings

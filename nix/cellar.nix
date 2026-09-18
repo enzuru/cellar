@@ -90,5 +90,8 @@ stdenv.mkDerivation {
     runHook postInstall
   '';
 
-  meta.description = "A spreadsheet whose cells are Guile expressions";
+  meta = {
+    description = "A spreadsheet whose cells are Guile expressions";
+    license = lib.licenses.gpl3Only;
+  };
 }

@@ -718,6 +718,26 @@ Things worth knowing if you extend this:
   `g_binding_class_init` at startup. Also note that glib's and pango's typelibs
   live in their `out` output, while `${glib}` refers to `bin`.
 
+## Licence
+
+Cellar is free software under the GNU General Public License, version 3. The
+full text is in `LICENSE`. Both halves are covered: the Haskell shell and the
+Guile kernel are one program that happens to run in two processes.
+
+Everything Cellar is built from allows this. GTK 4, libadwaita and Guile are
+under the LGPL, and so are the `haskell-gi` bindings that reach them. The
+`pipes`, `vector` and `hedgehog` packages are under the BSD 3-clause licence.
+`gi-gtk4-declarative`, which is compiled from the checkout next door rather
+than fetched as a package, is under the Mozilla Public License 2.0, and none of
+its source files carries the notice that would keep it out of a GPL work, so
+section 3.3 of that licence allows it.
+
+There is no GPL header at the top of each source file. Those files open with a
+paragraph about what the module is for, which is what they are read for, and a
+notice repeated sixty times would bury it. The licence is declared once in
+`LICENSE`, once in `cellar.cabal`, once in each Nix derivation, and once in the
+About dialog.
+
 ## What has been verified
 
 The grid, the editor, evaluation, recalculation, error display, keyboard

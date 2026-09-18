@@ -58,5 +58,8 @@ stdenv.mkDerivation {
     runHook postInstall
   '';
 
-  meta.description = "The evaluator behind Cellar: sheets of Guile expressions";
+  meta = {
+    description = "The evaluator behind Cellar: sheets of Guile expressions";
+    license = lib.licenses.gpl3Only;
+  };
 }
