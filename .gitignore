@@ -13,4 +13,7 @@ dist-newstyle/
 # nix
 result
 result-*
+# The dev shell, kept as a GC root so the toolchain is not collected.
+.nix-dev-profile
+.nix-dev-profile-*-link
 /.agent-shell/

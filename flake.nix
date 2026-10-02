@@ -77,6 +77,12 @@
               blueprint-compiler gnumake pkg-config
               gtk4 gtk4.dev libadwaita gtksourceview5 gobject-introspection
               adwaita-icon-theme hicolor-icon-theme
+              # Driving the real window under a nested X server.  These are in
+              # the shell rather than fetched by `nix shell nixpkgs#...' per
+              # run, so that one GC root over the shell keeps them, and so
+              # that the version is the one this flake pins rather than
+              # whatever the registry points at today.
+              xvfb-run xorg-server xdotool imagemagick dbus
             ];
 
             # haskell-gi's generated code dlopens the bare sonames recorded in

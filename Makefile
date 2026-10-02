@@ -169,24 +169,19 @@ coverage:
 	  | awk '/^-----<module/ { name = $$2; sub(/>-----/, "", name) } \
 	         /expressions used/ { printf "  %4s  %s\n", $$1, name }'
 
-# Drives the real UI under a nested X server; needs xvfb-run, imagemagick, xdotool.
+# Drives the real UI under a nested X server.  xvfb-run, xdotool, ImageMagick
+# and dbus come from the dev shell, so that one GC root over the shell keeps
+# them: fetching them per run with `nix shell nixpkgs#...' left them unrooted,
+# and a garbage collection took them away twice in one week.
 smoke: ui build
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-smoke.sh
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-start-smoke.sh
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-tabs-smoke.sh
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-kernel-smoke.sh
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-drag-smoke.sh
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-editor-smoke.sh
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-colour-smoke.sh
-	nix shell nixpkgs#xvfb-run nixpkgs#imagemagick nixpkgs#xdotool nixpkgs#dbus \
-	  -c xvfb-run -s "-screen 0 1280x820x24" tests/gui-menu-smoke.sh
+	xvfb-run -s "-screen 0 1280x820x24" tests/gui-smoke.sh
+	xvfb-run -s "-screen 0 1280x820x24" tests/gui-start-smoke.sh
+	xvfb-run -s "-screen 0 1280x820x24" tests/gui-tabs-smoke.sh
+	xvfb-run -s "-screen 0 1280x820x24" tests/gui-kernel-smoke.sh
+	xvfb-run -s "-screen 0 1280x820x24" tests/gui-drag-smoke.sh
+	xvfb-run -s "-screen 0 1280x820x24" tests/gui-editor-smoke.sh
+	xvfb-run -s "-screen 0 1280x820x24" tests/gui-colour-smoke.sh
+	xvfb-run -s "-screen 0 1280x820x24" tests/gui-menu-smoke.sh
 
 clean:
 	rm -f $(UI)
