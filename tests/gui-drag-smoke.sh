@@ -48,7 +48,7 @@ expect () {  # expect <description> <test...>
   local what="$1"; shift
   if "$@"; then echo "  ok   $what"; else echo "  FAIL $what"; failures=$((failures + 1)); fi
 }
-holds () { [ -f "$1" ] && [ "$(cat "$1")" = "$2" ]; }
+holds () { cellar_holds "$WORKBOOK" "$SHEET" "$1" "$2"; }
 
 settle () {  # settle <seconds> <test...>
   local limit="$1"; shift
@@ -106,23 +106,23 @@ echo "1. dragging a row by its number"
 drag 35 180 35 230
 shot 2-row-dropped
 
-settle 30 holds "$SHEET/cells/A3.scm" '"first"'
+settle 30 holds A3 '"first"'
 expect "the dragged row landed where it was dropped" \
-  holds "$SHEET/cells/A3.scm" '"first"'
-expect "and the rows it passed slid up" holds "$SHEET/cells/A1.scm" '"second"'
-expect "and the other one too" holds "$SHEET/cells/A2.scm" '"third"'
+  holds A3 '"first"'
+expect "and the rows it passed slid up" holds A1 '"second"'
+expect "and the other one too" holds A2 '"third"'
 expect "the reference followed the cell it names" \
-  holds "$SHEET/cells/B3.scm" 'A3'
+  holds B3 'A3'
 
 echo "2. dragging a column by its heading"
 # The headings sit at y=151; column A is around x=118 and column C around 325.
 drag 118 151 325 151
 shot 3-column-dropped
 
-settle 30 holds "$SHEET/cells/C3.scm" '"first"'
+settle 30 holds C3 '"first"'
 expect "the dragged column landed where it was dropped" \
-  holds "$SHEET/cells/C3.scm" '"first"'
-expect "and its reference came with it" holds "$SHEET/cells/C1.scm" '"second"'
+  holds C3 '"first"'
+expect "and its reference came with it" holds C1 '"second"'
 
 # And again.  A column that moves is taken out of the view and put back, and
 # GTK builds a fresh heading when it does, so a drag that only works once is a
@@ -131,35 +131,33 @@ echo "3. dragging a column a second time"
 drag 325 151 118 151
 shot 4-column-dragged-back
 
-settle 30 holds "$SHEET/cells/A3.scm" '"first"'
+settle 30 holds A3 '"first"'
 expect "a column can be dragged more than once" \
-  holds "$SHEET/cells/A3.scm" '"first"'
-expect "and its reference came back with it" holds "$SHEET/cells/A1.scm" '"second"'
+  holds A3 '"first"'
+expect "and its reference came back with it" holds A1 '"second"'
 
 # One column to the right, and one back to the left.  A column dropped on
 # another takes its place and the ones between shift along, so a move of one is
 # a swap -- and it is where an off-by-one would show if there were one.
 echo "4. dragging a column one place and back"
 drag 118 151 220 151
-settle 30 holds "$SHEET/cells/B3.scm" '"first"'
+settle 30 holds B3 '"first"'
 expect "a column dropped on the next one takes its place" \
-  holds "$SHEET/cells/B3.scm" '"first"'
+  holds B3 '"first"'
 expect "and took the rest of its own column with it" \
-  holds "$SHEET/cells/B1.scm" '"second"'
+  holds B1 '"second"'
 
 drag 220 151 118 151
-settle 30 holds "$SHEET/cells/A3.scm" '"first"'
+settle 30 holds A3 '"first"'
 expect "and the same drag the other way puts it back" \
-  holds "$SHEET/cells/A3.scm" '"first"'
+  holds A3 '"first"'
 
 echo
 echo "app log (excluding harmless environment noise):"
 grep -av "libEGL\|DRI3\|dbus-daemon\|atk-bridge\|AT-SPI\|portal\|fusermount\|Registry\|display server" \
   "$OUT/app.log" | grep -av "^$" | head -10
 echo "the sheet as it stands:"
-for cell in "$SHEET"/cells/*.scm; do
-  printf '  %s = %s\n' "$(basename "$cell" .scm)" "$(cat "$cell")"
-done
+sed -n '/^    ("/ s/^    /  /p' "$WORKBOOK"
 echo "screenshots in $OUT"
 
 if [ "$failures" -eq 0 ]; then

@@ -50,8 +50,8 @@ expect () {  # expect <description> <test...>
 BOOK="$OUT/colours.cellar"
 cellar_workbook "$BOOK" "Summary"
 SHEET="Summary"
-cellar_cell "$WORKBOOK" "$SHEET" A1 '(styled 42 #:color "#ffffff" #:background "#3584e4")'
-cellar_cell "$WORKBOOK" "$SHEET" A2 '7'
+cellar_cell "$BOOK" "$SHEET" A1 '(styled 42 #:color "#ffffff" #:background "#3584e4")'
+cellar_cell "$BOOK" "$SHEET" A2 '7'
 
 dbus-run-session -- "$CELLAR" "$BOOK" > "$OUT/app.log" 2>&1 &
 APP=$!

@@ -67,7 +67,7 @@ settle () {  # settle <seconds> <test...>
 BOOK="$OUT/menus.cellar"
 cellar_workbook "$BOOK" "Summary"
 SHEET="Summary"
-cellar_cell "$WORKBOOK" "$SHEET" A1 '"first"'
+cellar_cell "$BOOK" "$SHEET" A1 '"first"'
 
 dbus-run-session -- "$CELLAR" "$BOOK" > "$OUT/app.log" 2>&1 &
 APP=$!
@@ -89,34 +89,34 @@ echo "1. the menu on a row number"
 # The row numbers are the narrow gutter down the left; row 2 is at y=205.
 menu_item 35 205 1
 shot 2-row-inserted
-settle 20 says "$SHEET/sheet.scm" 'rows . 101'
+settle 20 says "$BOOK" '(rows . 101)'
 expect "inserting a row from the gutter menu makes the sheet taller" \
-  says "$SHEET/sheet.scm" 'rows . 101'
+  says "$BOOK" '(rows . 101)'
 
 echo "2. the menu on a column heading"
 # The headings sit at y=151; column B is around x=220.  The third item is
 # Insert Column Before.
 menu_item 220 151 3
 shot 3-column-inserted
-settle 20 says "$SHEET/sheet.scm" 'columns . 27'
+settle 20 says "$BOOK" '(columns . 27)'
 expect "inserting a column from the heading menu makes the sheet wider" \
-  says "$SHEET/sheet.scm" 'columns . 27'
+  says "$BOOK" '(columns . 27)'
 
 echo "3. Ctrl+- deletes the active row"
 # Click a cell first, so that the grid has the keyboard.
 xdotool mousemove 220 205 click 1; sleep 2
 xdotool key ctrl+minus; sleep 3
 shot 4-row-deleted
-settle 20 says "$SHEET/sheet.scm" 'rows . 100'
+settle 20 says "$BOOK" '(rows . 100)'
 expect "Ctrl+- makes the sheet a row shorter" \
-  says "$SHEET/sheet.scm" 'rows . 100'
+  says "$BOOK" '(rows . 100)'
 
 echo "4. Ctrl+Alt+- deletes the active column"
 xdotool key ctrl+alt+minus; sleep 3
 shot 5-column-deleted
-settle 20 says "$SHEET/sheet.scm" 'columns . 26'
+settle 20 says "$BOOK" '(columns . 26)'
 expect "Ctrl+Alt+- makes the sheet a column narrower" \
-  says "$SHEET/sheet.scm" 'columns . 26'
+  says "$BOOK" '(columns . 26)'
 
 echo
 echo "app log (excluding harmless environment noise):"

@@ -45,7 +45,7 @@ expect () {  # expect <description> <test...>
   local what="$1"; shift
   if "$@"; then echo "  ok   $what"; else echo "  FAIL $what"; failures=$((failures + 1)); fi
 }
-holds () { [ -f "$1" ] && [ "$(cat "$1")" = "$2" ]; }
+holds () { cellar_holds "$WORKBOOK" "$SHEET" "$1" "$2"; }
 settle () {  # settle <seconds> <test...>
   local limit="$1"; shift
   local waited=0
@@ -106,19 +106,19 @@ echo "2. a cell goes to the external editor"
 # Column A, row 1: the cell the assertions below are about.
 xdotool mousemove 118 180 click 1; sleep 1
 xdotool key ctrl+shift+e
-settle 30 holds "$SHEET/cells/A1.scm" '"after"'
+settle 30 holds A1 '"after"'
 shot 3-edited
-expect "the editor wrote the cell's own file" holds "$SHEET/cells/A1.scm" '"after"'
+expect "the editor wrote the cell's own file" holds A1 '"after"'
 
 echo "3. and Cellar took it in"
 # Insert a row: that makes Cellar rewrite every cell from what it is holding.
 # If the watcher had missed the edit, this would put "before" back.
 xdotool key ctrl+alt+Down
-settle 30 holds "$SHEET/cells/A1.scm" '"after"'
+settle 30 holds A1 '"after"'
 shot 4-after-rewrite
 expect "the edit survived a whole-sheet write" \
-  holds "$SHEET/cells/A1.scm" '"after"'
-expect "and the sheet really was rewritten" test -f "$SHEET/cells/A3.scm"
+  holds A1 '"after"'
+expect "and the sheet really was rewritten" holds A3 '"second"'
 
 echo
 echo "app log (excluding harmless environment noise):"

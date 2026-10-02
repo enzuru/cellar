@@ -21,7 +21,7 @@ import Control.Monad (forM_, unless, void)
 import Data.IORef
 import qualified Data.Map.Strict as M
 import Data.List (isInfixOf)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Word (Word32)
 import System.Directory
 import System.Environment (setEnv)
@@ -125,23 +125,23 @@ tests window root = do
   happens window (SheetNamed Nothing "Q1")
   added <- stateOf window
   check window "adding a sheet adds a tab" ["Summary", "Q1"] (tabOrder added)
-  folder <- doesDirectoryExist (sales </> "sheets" </> "Q1")
-  check window "and a folder for it" True folder
+  inFile <- sheetsOnDisk sales
+  check window "and the file says so" ["Summary", "Q1"] inFile
 
   forM_ (tabNamed "Q1" added) $ \tab ->
     happens window (SheetNamed (Just (tabId tab)) "Quarter One")
   renamed <- stateOf window
   check window "renaming a sheet renames its tab" ["Summary", "Quarter One"]
     (tabOrder renamed)
-  moved <- doesDirectoryExist (sales </> "sheets" </> "Quarter One")
-  check window "and its folder" True moved
+  movedOn <- sheetsOnDisk sales
+  check window "and its name in the file" ["Summary", "Quarter One"] movedOn
 
   forM_ (tabNamed "Quarter One" renamed) $ \tab ->
     happens window (SheetDeleted (tabId tab) "Quarter One")
   deleted <- stateOf window
   check window "deleting a sheet takes the tab with it" ["Summary"] (tabOrder deleted)
-  gone <- doesDirectoryExist (sales </> "sheets" </> "Quarter One")
-  check window "and the folder goes too" False gone
+  leftOn <- sheetsOnDisk sales
+  check window "and it goes from the file too" ["Summary"] leftOn
 
   section "a cell, through the window and back"
   sheet <- stateOf window
@@ -156,8 +156,8 @@ tests window root = do
       let view = modelView (tabGrid found)
       check window "which is a number, and marked as one" True
         (numberAt view (Ref 0 0))
-      written <- readFile (cellFilePath (sales </> "sheets" </> "Summary") "A1")
-      check window "and the source is in the cell's own file" "(* 6 7)\n" written
+      written <- cellOnDisk sales "Summary" "A1"
+      check window "and the source is in the workbook file" (Just "(* 6 7)") written
 
   section "a cell through the grid"
   atWork <- stateOf window
@@ -170,8 +170,8 @@ tests window root = do
       Nothing -> False
       Just found -> null (tabSources found)
     check window "Delete clears the cell" True emptied
-    file <- doesFileExist (cellFilePath (sales </> "sheets" </> "Summary") "A1")
-    check window "and takes its file with it" False file
+    onDisk <- cellOnDisk sales "Summary" "A1"
+    check window "and takes it out of the file" Nothing onDisk
 
   section "moving and inserting"
   rows <- stateOf window
@@ -208,8 +208,8 @@ tests window root = do
       Just found -> sourceAt (modelView (tabGrid found)) (Ref 0 0) == Nothing
     check window "deleting the row a cell is on takes the cell away" True emptied'
     _ <- quiet window
-    gone <- doesFileExist (cellFilePath (sales </> "sheets" </> "Summary") "A1")
-    check window "and its file goes with it" False gone
+    gone <- cellOnDisk sales "Summary" "A1"
+    check window "and it goes out of the file with it" Nothing gone
     happens window (Act RecalculateSheet)
     again <- settle window (holds (tabId tab) (Ref 1 0) "")
     check window "recalculating leaves the sheet saying the same thing" True again
@@ -228,9 +228,9 @@ tests window root = do
     totalled <- settle window (holds (tabId tab) (Ref 3 0) "9")
     check window "summing a block puts the total under it" True totalled
     _ <- quiet window
-    written <- readFile (cellFilePath (sales </> "sheets" </> "Summary") "A4")
+    written <- cellOnDisk sales "Summary" "A4"
     check window "and the cell holds a range, not the numbers"
-      "(sum (range 'A1 'A3))" (takeWhile (/= '\n') written)
+      (Just "(sum (range 'A1 'A3))") written
 
   section "the tabs"
   happens window (SheetNamed Nothing "Q2")
@@ -239,14 +239,14 @@ tests window root = do
   selected <- stateOf window
   check window "selecting a tab shows that sheet" (Just "Summary")
     (tabName <$> currentTab selected)
-  saved <- workbookActiveSheet =<< resolved sales
-  check window "and the workbook remembers which" (Just "Summary") saved
+  saved <- bookActive <$> bookOnDisk sales
+  check window "and the file remembers which" (Just "Summary") saved
   happens window (TabsReordered (reverse (map tabId (stateTabs selected))))
   reordered <- stateOf window
   check window "dragging a tab reorders the sheets" ["Q2", "Summary"]
     (tabOrder reordered)
-  order <- workbookSheetNames =<< resolved sales
-  check window "and the folder is told" ["Q2", "Summary"] order
+  order <- sheetsOnDisk sales
+  check window "and the file is told" ["Q2", "Summary"] order
 
   section "what the window refuses"
   forM_ (tabNamed "Q2" reordered) $ \tab ->
@@ -263,10 +263,13 @@ tests window root = do
   check window "a folder that is not a workbook is not opened" (Just "sales.cellar")
     (workbookName <$> stateWorkbook refused)
 
-  section "the folder changing underneath"
+  section "the file changing underneath"
   onDisk <- stateOf window
   forM_ (currentTab onDisk) $ \tab -> do
-    saveCell (sales </> "sheets" </> "Summary") "C3" (Just "\"outside\"")
+    -- Somebody else's commit, or another copy of Cellar: the file says
+    -- something the window has not been told.
+    book <- bookOnDisk sales
+    writeOutside sales book "Summary" "C3" "\"outside\""
     happens window DiskChanged
     noticed <- settle window (holds (tabId tab) (Ref 2 2) "outside")
     check window "a cell written from outside is taken in" True noticed
@@ -352,12 +355,13 @@ tests window root = do
     narrower <- stateOf window
     check window "deleting a column makes the sheet narrower" (Just 26)
       (viewColumns . modelView . tabGrid <$> tabById (tabId tab) narrower)
-    -- An empty cell has no file until somebody asks to open one, which is
-    -- what brings it into being.
+    -- A cell has no file of its own, so opening one elsewhere writes it
+    -- somewhere temporary for the editor to find.
     happens window (GridSaid (tabId tab) (Pressed (Ref 5 5) 1))
     happens window (Act OpenCellElsewhere)
-    made <- doesFileExist (cellFilePath (sales </> "sheets" </> "Summary") "F6")
-    check window "opening a cell elsewhere gives it a file to open" True made
+    temporary <- (</> "cellar" </> "F6.scm") <$> getTemporaryDirectory
+    made <- doesFileExist temporary
+    check window "opening a cell elsewhere writes it out for the editor" True made
 
   section "the drag, as the state sees it"
   dragging <- stateOf window
@@ -397,18 +401,18 @@ tests window root = do
     (tabOrder before, statePage before) (tabOrder untouched, statePage untouched)
 
   section "a workbook Cellar makes"
-  happens window (WorkbookMade (root </> "made.cellar") False False)
+  happens window (WorkbookMade (root </> "made.cellar") False)
   -- Settling on the workbook being open is not enough: its sheets are written
   -- out when the kernel answers, so this waits for the file to say so.
   made <- settle window $ \s ->
     (workbookName <$> stateWorkbook s) == Just "made.cellar"
   check window "a new workbook is made and opened" True made
   _ <- settleOn window $ do
-    written <- readSheetMetadata (root </> "made.cellar" </> "sheets" </> "Sheet 1")
-    pure ((lookupKey "rows" written >>= asInt) == Just 100)
-  sized <- readSheetMetadata (root </> "made.cellar" </> "sheets" </> "Sheet 1")
+    book <- bookOnDisk (root </> "made.cellar")
+    pure ((sheetRows . snd <$> listToMaybe (bookSheets book)) == Just 100)
+  sized <- bookOnDisk (root </> "made.cellar")
   check window "and its sheet is written out at the size on screen"
-    (Just 100) (lookupKey "rows" sized >>= asInt)
+    (Just 100) (sheetRows . snd <$> listToMaybe (bookSheets sized))
   happens window (Act NewScratch)
   scratch <- settle window (\s -> stateScratch s && isJust (stateWorkbook s))
   check window "a scratch workbook opens, and says it is one" True scratch
@@ -447,6 +451,31 @@ resolved :: FilePath -> IO Workbook
 resolved path = do
   found <- resolveWorkbook path
   maybe (fail (path ++ " is not a workbook")) pure found
+
+-- | Write a cell into the workbook file behind the window's back.
+writeOutside :: FilePath -> Book -> String -> String -> String -> IO ()
+writeOutside path book sheet name source = do
+  found <- resolveWorkbook path
+  forM_ found $ \open -> writeBook open book
+    { bookSheets = [ (n, if n == sheet
+                           then s { sheetCells = (name, source) : sheetCells s }
+                           else s)
+                   | (n, s) <- bookSheets book ] }
+
+-- | What a cell holds, read out of the workbook file.
+cellOnDisk :: FilePath -> String -> String -> IO (Maybe String)
+cellOnDisk path sheet name = do
+  book <- bookOnDisk path
+  pure (lookup sheet (bookSheets book) >>= lookup name . sheetCells)
+
+-- | The sheets a workbook file holds, in the order their tabs come in.
+sheetsOnDisk :: FilePath -> IO [String]
+sheetsOnDisk path = map fst . bookSheets <$> bookOnDisk path
+
+bookOnDisk :: FilePath -> IO Book
+bookOnDisk path = do
+  found <- resolveWorkbook path
+  maybe (pure (Book [] Nothing)) readBook found
 
 -- | The keyval for Delete, without pulling GDK into a suite that draws
 -- nothing.  GDK_KEY_Delete is 0xffff, and has been since X11.

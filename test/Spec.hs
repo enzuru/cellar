@@ -445,7 +445,7 @@ main = do
   -- what the kernel owes an answer for.
   section "the window's state"
   let blank = newState defaultConfig "/home/nobody"
-      here = Workbook "/home/nobody/book.cellar" SheetsUnder
+      here = Workbook "/home/nobody/book.cellar"
       (counted, first') = freshTab "Summary" (emptyView 10 4) blank
       (counted', second') = freshTab "Q1" (emptyView 10 4) counted
       twoSheets = addTab second' (opened here (first' :| []) Nothing False counted')
@@ -518,10 +518,12 @@ main = do
     [Now (Request [(Op.SetCell "Summary" "A1" "", CellSet (tabId first') "A1")])]
     (asksFor (Act ClearCell))
   -- The one effect that goes out under a name, so that a drag costs one write
-  -- rather than one per frame.
-  check failures "a column resized asks for the layout, and waits first"
-    [Settle "layout:1" (SaveSheet "/home/nobody/book.cellar/sheets/Summary"
-                          (Sheet [] 10 4 [(1, 200)]))]
+  -- rather than one per frame.  A workbook is one file, so what it writes is
+  -- the whole of it.
+  check failures "a column resized asks for the workbook, and waits first"
+    [Settle "layout:1" (SaveWorkbook here
+      (Book [("Summary", Sheet [] 10 4 [(1, 200)]), ("Q1", Sheet [] 10 4 [])]
+            (Just "Summary")))]
     (asksFor (GridSaid (tabId first') (Resized (ColumnId 1) 200)))
   check failures "a toast asks for a toast"
     [Now (Notify "hello")] (asksFor (Toast "hello"))
@@ -607,259 +609,98 @@ main = do
   check failures "and the file says which format it is"
     True ("(format . 3)" `isInfixOf` bookText book)
 
-  section "opening what is already on disk"
-  older <- makeTemporaryDirectory
-  do let folder = older </> "old.cellar"
-     -- A format 2 workbook: a folder of sheet folders, with a repository
-     -- inside it, which is where the old format put one.
-     createDirectoryIfMissing True (folder </> ".git")
-     writeFile (folder </> ".git" </> "HEAD") "ref: refs/heads/master\n"
-     _ <- createWorkbook folder "Summary"
-     (added, _) <- addWorkbookSheet' folder "Q1"
-     saveSheet (workbookSheetDirectory added "Summary")
-               (Sheet [("A1", "\"kept\"")] 40 5 [(2, 150)])
-     found <- open folder
-     check failures "an old folder workbook still opens" True (isJust (Just found))
-     book <- readBook found
-     -- Adding a sheet makes it the one showing, which is what the index
-     -- said and so what the value says.
-     check failures "and reads as the same value a file would"
-       (["Summary", "Q1"], Just "Q1")
-       (map fst (bookSheets book), bookActive book)
-     check failures "with the cells it held"
-       (Just [("A1", "\"kept\"")])
-       (lookup "Summary" (bookSheets book) >>= Just . sheetCells)
-
-     -- Writing converts it.  The folder is moved aside, never removed: it may
-     -- be a Git repository, and taking somebody's history away to change a
-     -- file format would be unforgivable.
-     (converted, aside) <- writeBook found book
-     isFile <- doesFileExist (workbookRoot converted)
-     check failures "writing turns the folder into a file" True isFile
-     check failures "at the same path" folder (workbookRoot converted)
-     check failures "and the old folder is kept, not removed" True (isJust aside)
-     forM_ aside $ \kept -> do
-       stillThere <- doesFileExist (kept </> ".git" </> "HEAD")
-       check failures "with the repository that was inside it" True stillThere
-     again <- open folder
-     reread <- readBook again
-     check failures "the file that comes out reads back the same" book reread
-
   section "the store"
   root <- makeTemporaryDirectory
   let inRoot = (root </>)
 
   do let path = inRoot "round.cellar"
          cells = [ ("A1", "\"Qty\""), ("A2", "7")
-                 , ("C1", "(sum (range 'A2 'A3))")
-                 , ("C3", "(if (> A2 5)\n    'over\n    'under)") ]
-     createSheetDirectory path
-     saveSheet path (Sheet cells 8 3 [(0, 104), (2, 180)])
-     back <- readSheet path
-     check failures "the cells come back" cells (sort (sheetCells back))
-     check failures "the size with them" (8, 3) (sheetRows back, sheetColumns back)
-     check failures "and the column widths" [(0, 104), (2, 180)] (sort (sheetWidths back))
-     hasB1 <- doesFileExist (cellFilePath path "B1")
-     check failures "an empty cell has no file" False hasB1
-     -- Which is why opening a cell in another program has to make one: a
-     -- path that is not there cannot be handed to anything.
-     made <- touchCell path "B1"
-     check failures "so opening one makes it" (cellFilePath path "B1") made
-     blank <- readFile made
-     check failures "empty, as the cell is" "" blank
-     kept <- touchCell path "A2"
-     held <- readFile kept
-     check failures "while a cell that has a file keeps what is in it" "7\n" held
+                 , ("C1", "(sum (range 'A2 'A3))") ]
+         book = Book [("Summary", Sheet cells 40 5 [(2, 150)])] (Just "Summary")
+     made <- createWorkbook path "Summary"
+     writeBook made book
+     back <- readBook made
+     check failures "a workbook written to disk reads back" book back
+     found <- resolveWorkbook path
+     check failures "and the path it was written to is a workbook" True (isJust found)
 
-  do let path = inRoot "mine.cellar"
-     createSheetDirectory path
-     saveSheet path (Sheet [("A1", "1")] 4 2 [])
-     writeFile (path </> "README.md") "mine\n"
-     writeFile (path </> "cells" </> "helpers.scm") "(define (double x) x)\n"
-     saveSheet path (Sheet [("B2", "9")] 4 2 [])
-     readme <- doesFileExist (path </> "README.md")
-     helpers <- doesFileExist (path </> "cells" </> "helpers.scm")
-     gone <- doesFileExist (cellFilePath path "A1")
-     check failures "a README is left alone" True readme
-     check failures "so is a stray .scm that is not a cell" True helpers
-     check failures "while the cleared cell did go" False gone
+  do let path = inRoot "nothing.cellar"
+     writeFile path "this is not a workbook\n"
+     opened <- resolveWorkbook path
+     check failures "a .cellar file is taken for a workbook by its name" True
+       (isJust opened)
+     outcome <- try (maybe (pure (Book [] Nothing)) readBook opened)
+     check failures "and reading one that is not says so rather than throwing"
+       True (either (\(StoreError _) -> True) (const False) outcome)
 
-  do let path = inRoot "book.cellar"
-     createWorkbook path "Summary"
-     book <- open path
-     check failures "a new workbook is of the current shape" False (isFormatOne book)
-     names <- workbookSheetNames book
-     check failures "with the sheet it was given" ["Summary"] names
-     active <- workbookActiveSheet book
-     check failures "which is the one showing" (Just "Summary") active
-     check failures "and its folder is worked out without asking the disk"
-       (path </> "sheets" </> "Summary") (workbookSheetDirectory book "Summary")
-     (book1, _) <- addWorkbookSheet book "Q1"
-     (book2, _) <- addWorkbookSheet book1 "Q2"
-     ordered <- workbookSheetNames book2
-     check failures "added sheets keep their order" ["Summary", "Q1", "Q2"] ordered
-     clash <- try (addWorkbookSheet book2 "q1")
-                :: IO (Either StoreError (Workbook, String))
-     check failures "a name differing only in case is refused" True (isLeft clash)
-     slash <- try (addWorkbookSheet book2 "a/b")
-                :: IO (Either StoreError (Workbook, String))
-     check failures "and so is one a folder cannot have" True (isLeft slash)
-     suggestion <- uniqueSheetName book2 "Q1"
-     check failures "a suggested name counts on from the last" "Q3" suggestion
-     summary <- uniqueSheetName book2 "Summary"
-     check failures "or gains a number when there was none" "Summary 2" summary
-     (book3, _) <- renameWorkbookSheet book2 "Q1" "First Quarter"
-     renamed <- workbookSheetNames book3
-     check failures "renaming keeps the order"
-       ["Summary", "First Quarter", "Q2"] renamed
-     setWorkbookOrder book3 ["Q2", "Summary", "First Quarter"]
-     reordered <- workbookSheetNames book3
-     check failures "and the order can be set"
-       ["Q2", "Summary", "First Quarter"] reordered
-     remaining <- removeWorkbookSheet book3 "Q2"
-     check failures "removing answers with what is left"
-       ["Summary", "First Quarter"] remaining
-     _ <- removeWorkbookSheet book3 "First Quarter"
-     lastOne <- try (removeWorkbookSheet book3 "Summary")
-                  :: IO (Either StoreError [String])
-     check failures "the last sheet cannot be removed" True (isLeft lastOne)
+  do let path = inRoot "plain.txt"
+     writeFile path "((format . 3) (active . \"S\") (sheets))\n"
+     opened <- resolveWorkbook path
+     check failures "a file that is not named .cellar is not a workbook"
+       False (isJust opened)
 
-  do let path = inRoot "keepsake.cellar"
-     createWorkbook path "Summary"
-     book <- open path
-     (book', _) <- addWorkbookSheet book "Q1"
-     let folder = workbookSheetDirectory book' "Q1"
-     writeFile (folder </> "README") "mine\n"
-     _ <- removeWorkbookSheet book' "Q1"
-     note <- doesFileExist (folder </> "README")
-     names <- workbookSheetNames book'
-     check failures "a note keeps its folder standing" True note
-     check failures "but the sheet is no longer a tab" ["Summary"] names
+  do notThere <- resolveWorkbook (inRoot "absent.cellar")
+     check failures "and neither is a path with nothing at it" False (isJust notThere)
 
-  do let path = inRoot "hint.cellar"
-     createWorkbook path "Summary"
-     book <- open path
-     (book', _) <- addWorkbookSheet book "Q1"
-     -- As if someone else's commit had brought a sheet in and taken one away.
-     createSheetDirectory (path </> "sheets" </> "Arrived")
-     removeDirectoryRecursive (path </> "sheets" </> "Q1")
-     names <- workbookSheetNames book'
-     check failures "a sheet the index never heard of turns up"
-       True ("Arrived" `elem` names)
-     check failures "one whose folder went is dropped" False ("Q1" `elem` names)
+  do let path = inRoot "twice.cellar"
+     _ <- createWorkbook path "Sheet 1"
+     again <- try (createWorkbook path "Sheet 1")
+     check failures "a workbook is not made over one that is already there"
+       True (either (\(StoreError _) -> True) (const False) again)
 
-  do let path = inRoot "old.cellar"
-     createSheetDirectory path
-     saveSheet path (Sheet [("A1", "\"first\""), ("B2", "(* 6 7)")] 12 4 [(0, 120)])
-     isWorkbook <- isWorkbookDirectory path
-     book <- open path
-     names <- workbookSheetNames book
-     indexed <- doesFileExist (path </> "workbook.scm")
-     check failures "a workbook from before tabs is still a workbook" True isWorkbook
-     check failures "of the older shape, and the type says which"
-       (SingleSheet "old") (workbookLayout book)
-     check failures "with one sheet, named for the folder" ["old"] names
-     check failures "living where it always did"
-       path (workbookSheetDirectory book "old")
-     check failures "and nothing written to say so" False indexed
-     -- A second sheet is what moves it, and not before.
-     (book', _) <- addWorkbookSheet book "Q1"
-     check failures "adding a sheet changes the shape, and says so"
-       SheetsUnder (workbookLayout book')
-     moved <- doesFileExist (path </> "sheets" </> "old" </> "sheet.scm")
-     cleared <- doesFileExist (path </> "sheet.scm")
-     nowIndexed <- doesFileExist (path </> "workbook.scm")
-     migrated <- readSheet (path </> "sheets" </> "old")
-     both <- workbookSheetNames book'
-     check failures "adding a sheet moves the old one under sheets/" True moved
-     check failures "the top of the workbook is clear" False cleared
-     check failures "there is an index now" True nowIndexed
-     check failures "the cells came with it"
-       (Just "(* 6 7)") (lookup "B2" (sheetCells migrated))
-     check failures "and the column widths" [(0, 120)] (sheetWidths migrated)
-     check failures "naming both sheets" ["old", "Q1"] both
+  -- A save that changes nothing does not touch the file, so the watcher is
+  -- not woken by Cellar writing what the disk already said.
+  do let path = inRoot "quiet.cellar"
+         book = Book [("S", Sheet [("A1", "1")] 10 3 [])] (Just "S")
+     made <- createWorkbook path "S"
+     writeBook made book
+     before <- getModificationTime path
+     writeBook made book
+     after' <- getModificationTime path
+     check failures "writing the same workbook twice leaves the file alone"
+       before after'
 
-  do let path = inRoot "finding.cellar"
-     createWorkbook path "Summary"
-     fromIndex <- resolveWorkbook (path </> "workbook.scm")
-     fromSheet <- resolveWorkbook (path </> "sheets" </> "Summary" </> "sheet.scm")
-     nothing <- resolveWorkbook (inRoot "not-a-workbook")
-     check failures "a workbook is found from its index"
-       (Just path) (workbookRoot <$> fromIndex)
-     check failures "and from a sheet inside it"
-       (Just path) (workbookRoot <$> fromSheet)
-     check failures "and a folder that is not one is not found"
-       Nothing (workbookRoot <$> nothing)
+  check failures "a sheet needs a name a file can hold"
+    [False, False, False, True]
+    (map validSheetName ["", "   ", "a/b", "Summary"])
+  check failures "a free name is left alone"
+    "Q3" (uniqueSheetName ["Summary", "Q1"] "Q3")
+  check failures "and a taken one gets the next number"
+    "Q2" (uniqueSheetName ["Summary", "Q1"] "Q1")
+  check failures "counting past the ones already there"
+    "Sheet 4" (uniqueSheetName ["Sheet 2", "Sheet 3"] "Sheet 2")
+  check failures "a workbook is named for its file"
+    "budget.cellar" (workbookFileName "budget")
+  check failures "and a name that already says so is left alone"
+    "budget.cellar" (workbookFileName "budget.cellar")
 
-  do let path = inRoot "watched.cellar"
-     createWorkbook path "Summary"
-     book <- open path
-     (book', _) <- addWorkbookSheet book "Q1"
-     let summary = workbookSheetDirectory book' "Summary"
-     -- One cell at a time is how an edit reaches the disk; the whole-sheet
-     -- write above is only for a workbook being copied.
-     saveCell summary "A1" (Just "(* 6 7)")
-     written <- readSheetCells summary
-     check failures "a cell written on its own is on disk"
-       (Just "(* 6 7)") (lookup "A1" written)
-     saveCell summary "A1" (Just "   ")
-     blanked <- doesFileExist (cellFilePath summary "A1")
-     check failures "a cell cleared to whitespace takes its file with it" False blanked
-     saveCell summary "A2" Nothing
-     never <- doesFileExist (cellFilePath summary "A2")
-     check failures "and so does one cleared outright" False never
-
-     setWorkbookActive book' "Q1"
-     active <- workbookActiveSheet book'
-     order <- workbookSheetNames book'
-     check failures "the sheet showing is written down" (Just "Q1") active
-     check failures "and the order is left as it was" ["Summary", "Q1"] order
-
-     -- What the watcher is pointed at.  A workbook changed by a commit or a
-     -- text editor is noticed through these and nothing else.
-     watched <- workbookWatchPaths book'
-     check failures "the watch covers the index"
-       True ((path </> "workbook.scm") `elem` watched)
-     check failures "the folder the sheets are under"
-       True ((path </> "sheets") `elem` watched)
-     check failures "each sheet's own folder"
-       True ((path </> "sheets" </> "Q1") `elem` watched)
-     check failures "the cells inside it"
-       True ((path </> "sheets" </> "Q1" </> "cells") `elem` watched)
-     check failures "and the primary file that says how big it is"
-       True ((path </> "sheets" </> "Q1" </> "sheet.scm") `elem` watched)
-
-  check failures "a workbook folder is named .cellar"
-    "budget.cellar" (workbookFolderName "budget")
-  check failures "and one that says so already is left alone"
-    "budget.cellar" (workbookFolderName "budget.cellar")
 
   section "the external editor"
-  do let path = inRoot "editing.cellar"
-     createSheetDirectory path
-     saveSheet path (Sheet [("A1", "\"before\"")] 4 2 [])
-     -- A stand-in editor: it writes the cell it was handed and exits, which is
+  do -- A cell has no file of its own now that a workbook is one file, so the
+     -- editor is handed a path Cellar wrote somewhere temporary.
+     let path = inRoot "A1.scm"
+     writeFile path "\"before\"\n"
+     -- A stand-in editor: it writes the file it was handed and exits, which is
      -- everything Cellar asks of a real one.
      let stand = inRoot "stand-in-editor"
      writeFile stand "#!/bin/sh\nprintf '\"after\"\\n' > \"$1\"\n"
      permissions <- getPermissions stand
      setPermissions stand permissions { executable = True }
-     started <- openExternalEditor stand path (Ref 0 0)
+     started <- openExternalEditor stand path
      check failures "the editor was started" (Just stand) started
-     -- It is not waited for -- the folder is watched instead -- so the test
-     -- waits for the file the way Cellar waits for the watcher.
+     -- It is not waited for -- the file is watched instead -- so the test
+     -- waits for it the way Cellar waits for the watcher.
      landed <- waitFor 100 $ do
-       text <- try (readFile (cellFilePath path "A1"))
-                 :: IO (Either SomeException String)
+       text <- try (readFile path) :: IO (Either SomeException String)
        pure $ case text of
          Right written | "after" `isInfixOf` written -> Just written
          _ -> Nothing
-     check failures "and wrote the cell's own file" True (isJust landed)
-     missing <- openExternalEditor "no-such-editor-anywhere" path (Ref 0 0)
+     check failures "and wrote the file it was given" True (isJust landed)
+     missing <- openExternalEditor "no-such-editor-anywhere" path
      check failures "a command that is not there is refused, not thrown"
        Nothing missing
      check failures "and an empty command is refused too"
-       Nothing =<< openExternalEditor "   " path (Ref 0 0)
+       Nothing =<< openExternalEditor "   " path
 
      -- The preference that decides which program Open hands a cell to.  There
      -- used to be a switch beside the command; a config file written while it
@@ -942,12 +783,6 @@ check failures label expected actual
 
 section :: String -> IO ()
 section title = putStrLn ("-- " ++ title)
-
--- | Add a sheet to a workbook named by its folder.
-addWorkbookSheet' :: FilePath -> String -> IO (Workbook, String)
-addWorkbookSheet' folder name = do
-  workbook <- open folder
-  addWorkbookSheet workbook name
 
 -- | Resolve a workbook the tests have just made, and be loud if it is not one.
 open :: FilePath -> IO Workbook

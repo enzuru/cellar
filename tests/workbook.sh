@@ -87,3 +87,34 @@ cellar_active () {
   printf '%s\n' "$2" > "$state/active"
   _cellar_write "$workbook"
 }
+
+# cellar_value <workbook-file> <sheet> <cell>
+# What a cell holds, read back out of the file.
+cellar_value () {
+  CELLAR_SHEET="$2" CELLAR_NAME="$3" awk '
+    BEGIN { sheet = ENVIRON["CELLAR_SHEET"]; name = ENVIRON["CELLAR_NAME"]
+            opening = "    (\"" name "\" . \"" }
+    $0 == "  (\"" sheet "\"" { here = 1; next }
+    here && /^  \("/ { here = 0 }
+    here && index($0, opening) == 1 {
+      line = substr($0, length(opening) + 1)
+      sub(/"\)+$/, "", line)
+      gsub(/\\"/, "\"", line)
+      gsub(/\\\\/, "\\", line)
+      print line
+      exit
+    }
+  ' "$1"
+}
+
+# cellar_holds <workbook-file> <sheet> <cell> <source>
+# Whether a cell holds exactly this, which is what the assertions ask.
+cellar_holds () {
+  [ -f "$1" ] || return 1
+  [ "$(cellar_value "$1" "$2" "$3")" = "$4" ]
+}
+
+# cellar_empty <workbook-file> <sheet> <cell>
+cellar_empty () {
+  [ -z "$(cellar_value "$1" "$2" "$3")" ]
+}
