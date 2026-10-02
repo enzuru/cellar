@@ -21,8 +21,13 @@
 -- module move to the Haskell side of the pipe while the evaluator stayed in
 -- Guile, and it is why the types below are all data and no behaviour.
 module Cellar.Store
-  ( -- * Sheets
-    Sheet (..)
+  ( -- * A workbook, as one file
+    Book (..)
+  , bookFormat
+  , bookText
+  , parseBook
+    -- * Sheets
+  , Sheet (..)
   , sheetDirectory
   , isSheetDirectory
   , createSheetDirectory
@@ -62,7 +67,7 @@ module Cellar.Store
 import Control.Exception (Exception, throwIO, try, SomeException)
 import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.Char (isDigit, toLower)
-import Data.List (isSuffixOf, sort)
+import Data.List (isSuffixOf, sort, sortOn)
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.Directory
 import System.FilePath ((</>), takeFileName, takeDirectory, takeExtension)
@@ -115,6 +120,75 @@ data Sheet = Sheet
   , sheetColumns :: Int
   , sheetWidths :: [(Int, Int)]
   } deriving (Eq, Show)
+
+--
+-- A workbook, as one file
+--
+
+-- | Everything one workbook file holds: its sheets in the order their tabs
+-- come in, each with its cells, and which of them was showing.
+data Book = Book
+  { bookSheets :: [(String, Sheet)]
+  , bookActive :: Maybe String
+  } deriving (Eq, Show)
+
+bookFormat :: Integer
+bookFormat = 3
+
+-- | A whole workbook as the text of one file.
+--
+-- One cell to a line, and the cells in a fixed order.  That is what keeps an
+-- edit to a single cell a single line of diff, and what lets two people who
+-- edited different cells merge without being asked about it.  It is most of
+-- what the folder of one file per cell was for.
+bookText :: Book -> String
+bookText book =
+  ";; A Cellar workbook: every sheet, and every cell of each.\n"
+    ++ "((format . " ++ show bookFormat ++ ")\n"
+    ++ " (active . " ++ quoted (fromMaybe "" (bookActive book)) ++ ")\n"
+    ++ " (sheets"
+    ++ concatMap sheetForm (bookSheets book)
+    ++ "))\n"
+  where
+    sheetForm (name, sheet) =
+      "\n  (" ++ quoted name ++ "\n"
+        ++ "   (rows . " ++ show (sheetRows sheet) ++ ")\n"
+        ++ "   (columns . " ++ show (sheetColumns sheet) ++ ")\n"
+        ++ "   (widths" ++ concatMap width (sortOn fst (sheetWidths sheet)) ++ ")\n"
+        ++ "   (cells" ++ concatMap cell (sortOn fst (sheetCells sheet)) ++ "))"
+    width (column, pixels) = " (" ++ show column ++ " . " ++ show pixels ++ ")"
+    cell (name, source) = "\n    (" ++ quoted name ++ " . " ++ quoted source ++ ")"
+
+quoted :: String -> String
+quoted = T.unpack . writeSexp . Str
+
+-- | Read a workbook file back.  Answers with what is wrong rather than
+-- throwing, because the caller is a window.
+parseBook :: Text -> Either String Book
+parseBook text = do
+  value <- parseSexp text
+  pure Book
+    { bookActive = case lookupKey "active" value >>= asString of
+        Just "" -> Nothing
+        other -> other
+    , bookSheets =
+        [ sheet
+        | Just forms <- [lookupKey "sheets" value >>= toList]
+        , Just sheet <- map sheetOf forms ]
+    }
+  where
+    -- A sheet is its name and then an alist of what is true of it.
+    sheetOf (Pair (Str name) rest) = Just (name, Sheet
+      { sheetCells = [ (n, source)
+                     | Just entries <- [lookupKey "cells" rest >>= toList]
+                     , Pair (Str n) (Str source) <- entries ]
+      , sheetRows = fromMaybe 0 (lookupKey "rows" rest >>= asInt)
+      , sheetColumns = fromMaybe 0 (lookupKey "columns" rest >>= asInt)
+      , sheetWidths = [ (fromIntegral column, fromIntegral pixels)
+                      | Just entries <- [lookupKey "widths" rest >>= toList]
+                      , Pair (Num column) (Num pixels) <- entries ]
+      })
+    sheetOf _ = Nothing
 
 -- Paths
 
@@ -577,7 +651,6 @@ indexText names active =
     ++ " (sheets"
     ++ concatMap (\name -> "\n  " ++ quoted name) names ++ ")\n"
     ++ " (active . " ++ quoted (fromMaybe "" active) ++ "))\n"
-  where quoted = T.unpack . writeSexp . Str
 
 -- | Remember which tab was showing.  A workbook from before tabs has one sheet
 -- and no index to write this into, and does not miss it.

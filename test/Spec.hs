@@ -14,7 +14,7 @@ import Control.Exception (SomeException, try)
 import Control.Monad (forM_, unless)
 import qualified Data.ByteString as B
 import Data.IORef
-import Data.List (isInfixOf, nub, sort)
+import Data.List (isInfixOf, isPrefixOf, nub, sort)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
@@ -572,6 +572,40 @@ main = do
        Step _ doings -> doings)
   check failures "quitting stops" True (stops (Act Quit))
   check failures "and closing the window stops too" True (stops WindowClosing)
+
+  -- A workbook is one file again.  These check the format on its own, as text
+  -- in and a value out, before anything that touches a disk.
+  section "a workbook as one file"
+  let summary = Sheet [("A1", "\"Qty\""), ("D6", "(sum (range 'D2 'D4))")] 102 28 [(1, 181)]
+      quarter = Sheet [] 100 26 []
+      book = Book [("Summary", summary), ("Q1", quarter)] (Just "Summary")
+  check failures "a book survives being written and read"
+    (Right book) (parseBook (T.pack (bookText book)))
+  check failures "an empty workbook survives it too"
+    (Right (Book [] Nothing)) (parseBook (T.pack (bookText (Book [] Nothing))))
+  -- One cell to a line, in a fixed order, is what keeps an edit to a single
+  -- cell a single line of diff and lets two people merge.
+  check failures "every cell is on a line of its own"
+    2 (length [ () | line <- lines (bookText book), "    (\"" `isPrefixOf` line ])
+  check failures "and the cells come out in order whatever order they went in"
+    (bookText book)
+    (bookText (Book [ ("Summary", summary { sheetCells = reverse (sheetCells summary) })
+                    , ("Q1", quarter) ] (Just "Summary")))
+  check failures "the sheets keep the order their tabs are in"
+    ["Summary", "Q1"]
+    (either (const []) (map fst . bookSheets) (parseBook (T.pack (bookText book))))
+  -- A cell holds Guile, so its text is full of the quotes and parens the file
+  -- is itself made of.
+  check failures "a cell full of quotes and backslashes survives"
+    (Right [("A1", "(string-append \"a\\\"b\" \")\")")])
+    (fmap (concatMap (sheetCells . snd) . bookSheets)
+          (parseBook (T.pack (bookText
+            (Book [("S", Sheet [("A1", "(string-append \"a\\\"b\" \")\")")] 1 1 [])]
+                  Nothing)))))
+  check failures "a workbook that is not one says so rather than throwing"
+    True (either (const True) (const False) (parseBook "(this is not"))
+  check failures "and the file says which format it is"
+    True ("(format . 3)" `isInfixOf` bookText book)
 
   section "the store"
   root <- makeTemporaryDirectory
