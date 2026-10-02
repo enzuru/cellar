@@ -49,10 +49,10 @@ expect () {  # expect <description> <test...>
 
 WORKBOOK="$OUT/runaway.cellar"
 cellar_workbook "$WORKBOOK" Summary
-cellar_cell "$WORKBOOK/sheets/Summary" A1 '"before"'
-cellar_cell "$WORKBOOK/sheets/Summary" A2 '(* 6 7)'
+cellar_cell "$WORKBOOK" "Summary" A1 '"before"'
+cellar_cell "$WORKBOOK" "Summary" A2 '(* 6 7)'
 # The cell this whole test is about.
-cellar_cell "$WORKBOOK/sheets/Summary" B1 '(let loop () (loop))'
+cellar_cell "$WORKBOOK" "Summary" B1 '(let loop () (loop))'
 
 dbus-run-session -- "$CELLAR" "$WORKBOOK" > "$OUT/app.log" 2>&1 &
 APP=$!

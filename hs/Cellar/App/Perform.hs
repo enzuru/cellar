@@ -1,6 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | How the window does what "Cellar.App.Update" asked for.
@@ -18,20 +17,20 @@ module Cellar.App.Perform
   , settleMicroseconds
   ) where
 
-import Control.Exception (SomeException, throwIO, try)
-import Control.Monad (forM, forM_, unless, void, when)
+import Control.Exception (SomeException, try)
+import Control.Monad (void)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
-import System.Directory (createDirectoryIfMissing, doesPathExist)
+import System.Directory (createDirectoryIfMissing, doesPathExist, getTemporaryDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>), takeFileName)
-import System.Process (callProcess)
 
 import qualified GI.GLib as GLib
 
 import Cellar.App.Effect
 import Cellar.App.Env
 import Cellar.App.Event
+import Cellar.App.State (TabId)
 import Cellar.Client (markReady, restartKernel)
 import Cellar.Config
 import Cellar.Editor (Preview (..))
@@ -86,7 +85,7 @@ perform env = \case
   AskAboutKernel -> nothing (askAboutTheKernel env)
   NeverMindKernel -> nothing (neverMindTheKernel env)
   OpenCellEditor tab r source -> nothing (openEditor env tab r source)
-  OpenCellFile folder r config -> openCellFile env folder r config
+  OpenCellFile tab r source config -> openCellFile env tab r source config
   ShowPreview mine text isError ->
     nothing (showPreview env mine (Preview text isError))
 
@@ -94,46 +93,27 @@ perform env = \case
   -- The folder on disk
   --
 
-  SaveSheet folder sheet -> do
-    outcome <- try (saveSheet folder sheet)
+  SaveWorkbook open book -> do
+    outcome <- try (writeBook open book)
     pure $ case outcome :: Either SomeException () of
-      Left _ -> Just (Toast "Could not save the sheet")
+      Left _ -> Just (Toast "Could not save the workbook")
       Right () -> Nothing
 
-  SaveCell folder name source -> nothing (quietly (saveCell folder name source))
   SaveConfig config -> nothing (quietly (saveConfig config))
-  Watch open -> do
-    paths <- workbookWatchPaths open
-    pure (Just (Watching paths))
-  SetActiveSheet open name -> nothing (quietly (setWorkbookActive open name))
-  SetSheetOrder open names -> nothing (quietly (setWorkbookOrder open names))
+  -- One file to watch now, which is the whole of it.
+  Watch open -> pure (Just (Watching [workbookRoot open]))
 
   ReadWorkbookAt path how -> readWorkbookAt path how
-  ReadSheetsOf open -> readSheetsOf open
-  MakeWorkbook path wantsGit -> makeWorkbook env path wantsGit False (pure ())
+  ReadWorkbookAgain open -> readWorkbookAgain open
+  MakeWorkbook path ->
+    makeWorkbook env path False (void (createWorkbook path "Sheet 1"))
   MakeScratch -> makeScratch
-  CopyWorkbook path sheets showing wantsGit ->
-    makeWorkbook env path wantsGit True (copyInto path sheets showing)
-
-  AddSheetFolder open name -> stored (addWorkbookSheet open name) $
-    \(moved, added) -> SheetAdded moved added
-  RenameSheetFolder open tab old new ->
-    stored (renameWorkbookSheet open old new) $
-      \(moved, renamed) -> SheetRenamed moved tab old renamed
-  RemoveSheetFolder open _ name ->
-    stored (removeWorkbookSheet open name) (const (SheetRemoved open name))
+  CopyWorkbook path book ->
+    makeWorkbook env path True (writeBook (Workbook path) book)
 
 -- | An effect with nothing to say afterwards.
 nothing :: IO () -> IO (Maybe Event)
 nothing action = action >> pure Nothing
-
--- | Something the store may refuse.  A refusal is a toast and nothing else.
-stored :: forall a. IO a -> (a -> Event) -> IO (Maybe Event)
-stored action said = do
-  outcome <- try action
-  pure $ case outcome :: Either StoreError a of
-    Left (StoreError why) -> Just (Toast (T.pack why))
-    Right got -> Just (said got)
 
 quietly :: IO a -> IO ()
 quietly action = do
@@ -151,89 +131,49 @@ readWorkbookAt :: FilePath -> Opening -> IO (Maybe Event)
 readWorkbookAt path how = resolveWorkbook path >>= \case
   Nothing -> pure (Just (WorkbookRefused path))
   Just open -> do
-    names <- workbookSheetNames open
-    showing <- workbookActiveSheet open
-    sheets <- forM names $ \name ->
-      (,) name <$> readSheetOrEmpty (workbookSheetDirectory open name)
-    pure (Just (WorkbookRead open how sheets showing))
+    outcome <- try (readBook open)
+    pure $ case outcome :: Either StoreError Book of
+      Left _ -> Just (WorkbookRefused path)
+      Right book -> Just (WorkbookRead open how (bookSheets book) (bookActive book))
 
--- | Read every sheet of a workbook that is already open, for the watcher.
+-- | Read the open workbook again, because its file changed under us.
 --
--- Whether this is a change at all is the update's to work out, since only the
--- update knows what the window is showing.  Answers with nothing when the
--- folder has gone: a workbook that is not there any more is not a change to
--- report, and the window keeps showing what it was showing.
-readSheetsOf :: Workbook -> IO (Maybe Event)
-readSheetsOf open = do
-  stillThere <- isWorkbookDirectory (workbookRoot open)
-  if not stillThere then pure Nothing else do
-    names <- workbookSheetNames open
-    sheets <- forM names $ \name -> do
-      sheet <- readSheetOrEmpty (workbookSheetDirectory open name)
-      pure (name, sheet)
-    pure (Just (SheetsOnDisk sheets))
-
-readSheetOrEmpty :: FilePath -> IO Sheet
-readSheetOrEmpty folder = do
-  isSheet <- isSheetDirectory folder
-  if not isSheet then pure emptySheet else do
-    outcome <- try (readSheet folder)
-    pure (either (\(_ :: SomeException) -> emptySheet) id outcome)
-
-emptySheet :: Sheet
-emptySheet = Sheet [] 100 26 []
+-- Answers with nothing at all when the file has gone: a workbook that is not
+-- there any more is not a change to report, and the window keeps showing what
+-- it was showing.
+readWorkbookAgain :: Workbook -> IO (Maybe Event)
+readWorkbookAgain open = do
+  outcome <- try (readBook open)
+  pure $ case outcome :: Either SomeException Book of
+    Left _ -> Nothing
+    Right book -> Just (SheetsOnDisk (bookSheets book))
 
 --
 -- Making a workbook
 --
 
 -- | Make a workbook at this path, and say so.
-makeWorkbook :: Env -> FilePath -> Bool -> Bool -> IO () -> IO (Maybe Event)
-makeWorkbook env path wantsGit copying build = do
+makeWorkbook :: Env -> FilePath -> Bool -> IO () -> IO (Maybe Event)
+makeWorkbook env path copying build = do
   outcome <- try build'
   case outcome :: Either SomeException () of
     Left _ -> pure (Just (Toast (T.pack ("Could not " ++ verb ++ takeFileName path))))
     Right () -> do
-      when wantsGit (gitInit env path)
       notify env (T.pack (done ++ takeFileName path))
       pure (Just (Act (OpenRecentAt path)))
   where
-    build' = if copying then build else createWorkbook path "Sheet 1"
+    build' = build
     verb = if copying then "copy to " else "create "
     done = if copying then "Now editing " else "Created "
-
--- | Write these sheets into a workbook of their own.
-copyInto :: FilePath -> [(String, Sheet)] -> Maybe String -> IO ()
-copyInto directory sheets showing = case sheets of
-  [] -> throwIO (StoreError "There is nothing to copy")
-  ((firstName, _) : _) -> do
-    createWorkbook directory firstName
-    fresh <- resolveWorkbook directory >>= \case
-      Just open -> pure open
-      Nothing -> throwIO (StoreError ("Could not open " ++ directory))
-    forM_ sheets $ \(name, _) ->
-      unless (name == firstName) (void (addWorkbookSheet fresh name))
-    forM_ sheets $ \(name, sheet) ->
-      saveSheet (workbookSheetDirectory fresh name) sheet
-    writeWorkbookIndex directory (map fst sheets) showing
-
--- | Make a git repository of the workbook.  Around the workbook rather than
--- around any one sheet, which is the whole reason a workbook exists.
-gitInit :: Env -> FilePath -> IO ()
-gitInit env directory = do
-  outcome <- try (callProcess "git" ["init", "--quiet", directory])
-  case outcome :: Either SomeException () of
-    Left _ -> notify env "The folder was made, but git could not be run"
-    Right () -> pure ()
 
 -- | A workbook to think in, out of the way under the data directory.
 makeScratch :: IO (Maybe Event)
 makeScratch = do
   directory <- scratchLocation
   outcome <- try (createWorkbook directory "Sheet 1")
-  pure $ case outcome :: Either SomeException () of
+  pure $ case outcome :: Either SomeException Workbook of
     Left _ -> Just (Toast "Could not make a scratch workbook")
-    Right () -> Just (ScratchMade directory)
+    Right _ -> Just (ScratchMade directory)
 
 scratchLocation :: IO FilePath
 scratchLocation = do
@@ -265,17 +205,32 @@ timestamp = GLib.dateTimeNewNowLocal >>= \case
 
 -- | An empty cell has no file, and no program can be handed a path that is not
 -- there, so opening one is what brings its file into being.
-openCellFile :: Env -> FilePath -> Ref -> Config -> IO (Maybe Event)
-openCellFile env folder r config = do
-  made <- try (touchCell folder (refName r))
+-- | Hand a cell to the editor in the preferences.
+--
+-- A cell has no file of its own now that a workbook is one file, so it goes
+-- out to a file of its own under the system's temporary directory.  Whatever
+-- is in that file when the editor is done with it comes back as an ordinary
+-- edit, so the workbook is written by the same path as every other edit.
+--
+-- The file is watched rather than waited on, because an editor may be a
+-- window that was already open and may never exit.
+openCellFile :: Env -> TabId -> Ref -> String -> Config -> IO (Maybe Event)
+openCellFile env tab r source config = do
+  made <- try $ do
+    directory <- (</> "cellar") <$> getTemporaryDirectory
+    createDirectoryIfMissing True directory
+    let file = directory </> (refName r ++ ".scm")
+    writeFile file (source ++ if null source || last source == '\n' then "" else "\n")
+    pure file
   case made :: Either SomeException FilePath of
     Left _ -> pure (Just (Toast (T.pack ("Could not write a file for " ++ refName r))))
     Right file -> do
+      watchCellFile env tab r file
       command <- effectiveEditorCommand config
       case command of
         Nothing -> nothing (openWithDesktop env file)
         Just external -> do
-          started <- openExternalEditor external folder r
+          started <- openExternalEditor external file
           pure . Just . Toast $ case started of
             Just program -> T.pack ("Editing " ++ refName r
                                     ++ " in " ++ takeFileName program)

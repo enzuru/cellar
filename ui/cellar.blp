@@ -283,7 +283,7 @@ Adw.AlertDialog delete_sheet_dialog {
 
 Adw.AlertDialog new_sheet_dialog {
   heading: _("New Workbook");
-  body: _("A workbook is a folder, and a Git repository worth making one of: a folder for each sheet in it, and one small file for every cell.");
+  body: _("A workbook is one file, holding every sheet and every cell of each.");
   default-response: "create";
   close-response: "cancel";
 
@@ -307,11 +307,6 @@ Adw.AlertDialog new_sheet_dialog {
         ellipsize: middle;
         label: _("Choose a folder…");
       };
-    }
-
-    Gtk.CheckButton new_sheet_git {
-      label: _("Initialize a Git repository");
-      active: true;
     }
   };
 }

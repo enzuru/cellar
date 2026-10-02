@@ -139,20 +139,14 @@ data Event
   | DiskChanged
   | SheetNamed (Maybe TabId) String
     -- ^ A dialog asked for a name: for a tab to be renamed, or for a new one.
-  | SheetAdded Workbook String
-  | SheetRenamed Workbook TabId String String
   | SheetDeleted TabId String
   | TabKept TabId
     -- ^ A tab whose close button was pressed, and which stays after all.
   | EditorCommandSet String
-  | WorkbookMade FilePath Bool Bool
-    -- ^ A folder for a new workbook, whether to copy this one into it, and
-    -- whether to make a Git repository of it.
+  | WorkbookMade FilePath Bool
+    -- ^ A path for a new workbook, and whether to copy this one into it.
   | FolderChosen FilePath
   | CellEdited TabId Ref String
-    -- | A sheet's folder has gone from the disk.  The kernel still holds the
-    -- sheet, and the sheets that are left may have been naming it.
-  | SheetRemoved Workbook String
     -- | These folders are being watched for changes made behind our back.
     -- The window holds the list because what is watched is a fact about the
     -- workbook that is open, and a subscription that starts and stops with

@@ -64,12 +64,12 @@ settle () {  # settle <seconds> <test...>
 # Three rows that name each other, so that a move has to rewrite references as
 # well as move files.  B1 says what A1 holds, wherever A1 ends up.
 WORKBOOK="$OUT/drag.cellar"
-SHEET="$WORKBOOK/sheets/Summary"
+SHEET="Summary"
 cellar_workbook "$WORKBOOK" Summary
-cellar_cell "$SHEET" A1 '"first"'
-cellar_cell "$SHEET" A2 '"second"'
-cellar_cell "$SHEET" A3 '"third"'
-cellar_cell "$SHEET" B1 'A1'
+cellar_cell "$WORKBOOK" "$SHEET" A1 '"first"'
+cellar_cell "$WORKBOOK" "$SHEET" A2 '"second"'
+cellar_cell "$WORKBOOK" "$SHEET" A3 '"third"'
+cellar_cell "$WORKBOOK" "$SHEET" B1 'A1'
 
 dbus-run-session -- "$CELLAR" "$WORKBOOK" > "$OUT/app.log" 2>&1 &
 APP=$!

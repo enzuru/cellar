@@ -49,9 +49,9 @@ expect () {  # expect <description> <test...>
 # The workbook: one sheet, one cell that colours itself and one that does not.
 BOOK="$OUT/colours.cellar"
 cellar_workbook "$BOOK" "Summary"
-SHEET="$BOOK/sheets/Summary"
-cellar_cell "$SHEET" A1 '(styled 42 #:color "#ffffff" #:background "#3584e4")'
-cellar_cell "$SHEET" A2 '7'
+SHEET="Summary"
+cellar_cell "$WORKBOOK" "$SHEET" A1 '(styled 42 #:color "#ffffff" #:background "#3584e4")'
+cellar_cell "$WORKBOOK" "$SHEET" A2 '7'
 
 dbus-run-session -- "$CELLAR" "$BOOK" > "$OUT/app.log" 2>&1 &
 APP=$!

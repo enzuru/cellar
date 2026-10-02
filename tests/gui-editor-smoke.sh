@@ -58,11 +58,11 @@ settle () {  # settle <seconds> <test...>
 }
 
 WORKBOOK="$OUT/editing.cellar"
-SHEET="$WORKBOOK/sheets/Summary"
+SHEET="Summary"
 cellar_workbook "$WORKBOOK" Summary
-cellar_cell "$SHEET" A1 '"before"'
-cellar_cell "$SHEET" A2 '"second"'
-cellar_cell "$SHEET" B1 'A1'
+cellar_cell "$WORKBOOK" "$SHEET" A1 '"before"'
+cellar_cell "$WORKBOOK" "$SHEET" A2 '"second"'
+cellar_cell "$WORKBOOK" "$SHEET" B1 'A1'
 
 # The stand-in editor: it writes the file it is handed and exits, which is
 # everything Cellar asks of a real one.

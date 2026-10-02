@@ -69,11 +69,11 @@ settle () {  # settle <seconds> <test...>
 # that what the app opens is what the app would have written.
 WORKBOOK="$OUT/demo.cellar"
 cellar_workbook "$WORKBOOK" Summary Q1 Q2
-cellar_cell "$WORKBOOK/sheets/Summary" A1 '"Summary sheet"'
-cellar_cell "$WORKBOOK/sheets/Q1" A1 '"Q1 sheet"'
-cellar_cell "$WORKBOOK/sheets/Q1" B1 '1200'
-cellar_cell "$WORKBOOK/sheets/Q2" A1 '"Q2 sheet"'
-cellar_cell "$WORKBOOK/sheets/Q2" B1 '2400'
+cellar_cell "$WORKBOOK" "Summary" A1 '"Summary sheet"'
+cellar_cell "$WORKBOOK" "Q1" A1 '"Q1 sheet"'
+cellar_cell "$WORKBOOK" "Q1" B1 '1200'
+cellar_cell "$WORKBOOK" "Q2" A1 '"Q2 sheet"'
+cellar_cell "$WORKBOOK" "Q2" B1 '2400'
 cellar_active "$WORKBOOK" Q1
 
 # A workbook in the format from before tabs: sheet.scm and cells/ at the top,
@@ -155,7 +155,7 @@ expect "and the index knows about it" \
 # notice a new folder. Ctrl+Page_Down does not wrap, so pressing it again on the
 # last tab costs nothing, and the loop below stops the moment the rebuild lands.
 echo "5. a sheet that arrived from outside"
-cellar_sheet "$WORKBOOK/sheets/FromDisk" 100 26
+cellar_add_sheet "$WORKBOOK" FromDisk
 sleep 5
 shot 7-arrived
 # Press and re-check: the tab cannot be reached until the rebuild has landed,

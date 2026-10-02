@@ -21,16 +21,15 @@ import Control.Monad (void)
 import System.Process (spawnProcess)
 
 import Cellar.Config (editorArgv)
-import Cellar.Ref (Ref, refName)
-import Cellar.Store (cellFilePath)
+import Cellar.Ref (Ref)
 
--- | Open a cell with a command.  Answers with the program that was started, or
+-- | Open a file with a command.  Answers with the program that was started, or
 -- 'Nothing' when it could not be -- nearly always a command that is not on
 -- PATH, which the caller reports before falling back to the built-in editor
 -- rather than leaving a cell that cannot be edited at all.
-openExternalEditor :: String -> FilePath -> Ref -> IO (Maybe FilePath)
-openExternalEditor command directory r =
-  case editorArgv command (cellFilePath directory (refName r)) of
+openExternalEditor :: String -> FilePath -> IO (Maybe FilePath)
+openExternalEditor command file =
+  case editorArgv command file of
     [] -> pure Nothing
     (program : arguments) -> do
       outcome <- try (void (spawnProcess program arguments))

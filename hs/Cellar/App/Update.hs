@@ -125,19 +125,18 @@ update state = \case
   EditPressed -> editing state
   RecalculatePressed -> recalculating state
 
+  -- Which tab is showing and what order they come in are both written into
+  -- the workbook file, so both are an ordinary save.
   TabSelected tab ->
     let chosen = selectTab tab state
-        remember = [ SetActiveSheet open (tabName t)
-                   | not (stateLoading chosen)
-                   , open <- maybeToList (stateWorkbook chosen)
-                   , t <- maybeToList (tabById tab chosen) ]
-    in Step chosen (map Now (remember ++ [FocusGrid]))
+    in Step chosen (map Now
+         ([ effect | not (stateLoading chosen), effect <- writeWorkbook chosen ]
+          ++ [FocusGrid]))
 
   TabsReordered order ->
     let ordered = orderTabs order state
-    in Step ordered [ Now (SetSheetOrder open (tabOrder ordered))
-                    | not (stateLoading ordered)
-                    , open <- maybeToList (stateWorkbook ordered) ]
+    in Step ordered
+         [ Now effect | not (stateLoading ordered), effect <- writeWorkbook ordered ]
 
   -- A tab is a sheet of the workbook rather than a view of one, so closing it
   -- is deleting it -- which is worth being asked about, and worth refusing
@@ -152,17 +151,15 @@ update state = \case
 
   TabKept tab -> stay (keeping tab state)
 
-  SheetDeleted tab name -> case stateWorkbook state of
-    Nothing -> stay state
-    Just open ->
-      after (forgetTab tab (keeping tab state)) (RemoveSheetFolder open tab name)
-
-  -- The sheets that are left may have been naming the one that has gone, so
-  -- the kernel says what they come to now that they cannot.
-  SheetRemoved open name ->
-    Step state (map Now [ Request [(Op.Close name, Closed)]
-                        , Watch open
-                        , Notify (T.pack ("Deleted " ++ name)) ])
+  -- A sheet goes by leaving the workbook, and the workbook is then written.
+  -- The sheets that are left may have been naming it, so the kernel says what
+  -- they come to now that they cannot.
+  SheetDeleted tab name ->
+    let without = forgetTab tab (keeping tab state)
+    in Step without (map Now
+         (  writeWorkbook without
+         ++ [ Request [(Op.Close name, Closed)]
+            , Notify (T.pack ("Deleted " ++ name)) ]))
 
   --
   -- The kernel
@@ -213,7 +210,7 @@ update state = \case
   --
 
   DiskChanged ->
-    Step state [ Now (ReadSheetsOf open) | open <- maybeToList (stateWorkbook state) ]
+    Step state [ Now (ReadWorkbookAgain open) | open <- maybeToList (stateWorkbook state) ]
 
   -- A sheet arrived or left -- somebody's commit, most likely.
   SheetsOnDisk sheets
@@ -280,11 +277,8 @@ update state = \case
   -- list of the ones opened lately.
   ScratchMade path -> after state (ReadWorkbookAt path AsScratch)
 
-  WorkbookMade path copying wantsGit -> after state { stateFresh = True } $
-    if copying
-      then CopyWorkbook path [ (tabName t, sheetOfTab state t) | t <- stateTabs state ]
-                             (tabName <$> currentTab state) wantsGit
-      else MakeWorkbook path wantsGit
+  WorkbookMade path copying -> after state { stateFresh = True } $
+    if copying then CopyWorkbook path (bookOf state) else MakeWorkbook path
 
   FolderChosen path -> after state (Emit (Act (OpenRecentAt path)))
 
@@ -292,30 +286,38 @@ update state = \case
   -- Sheets
   --
 
-  SheetNamed Nothing name -> case stateWorkbook state of
-    Nothing -> stay state
-    Just open -> after state (AddSheetFolder open name)
-
-  SheetNamed (Just tab) name -> case (stateWorkbook state, tabById tab state) of
-    (Just open, Just found) ->
-      after state (RenameSheetFolder open tab (tabName found) name)
-    _ -> stay state
-
-  SheetAdded open name ->
-    let (counted, tab) = freshTab name (emptyView defaultRows defaultColumns) state
-        grown = addTab tab (withWorkbook open counted)
-    in Step grown (map Now
-         [ Request [(opening name emptySheet, Opened (tabId tab) True)]
-         , Watch open
-         , Notify (T.pack ("Added " ++ name)) ])
+  -- Adding and renaming a sheet are changes to the tabs and then a save.  A
+  -- workbook is one file, so there is no folder to make or move first, and
+  -- nothing can fail between the two.
+  SheetNamed Nothing wanted
+    | not (validSheetName wanted) ->
+        after state (Notify "A sheet needs a name, and not one with a / in it")
+    | otherwise ->
+        let name = uniqueSheetName (tabOrder state) wanted
+            (counted, tab) = freshTab name (emptyView defaultRows defaultColumns) state
+            grown = addTab tab counted
+        in Step grown (map Now
+             (  writeWorkbook grown
+             ++ [ Request [(opening name emptySheet, Opened (tabId tab) True)]
+                , Notify (T.pack ("Added " ++ name)) ]))
 
   -- Cells elsewhere say Summary!B2, so a sheet that changes its name changes
   -- what every one of them has to say.  The kernel rewrites them and hands
   -- back the sources of every sheet it touched.
-  SheetRenamed open tab old new ->
-    Step (withTab tab (\t -> t { tabName = new }) (withWorkbook open state))
-      (map Now [ Request [(Op.Rename old new, Snapshot tab Nothing)]
-               , Watch open ])
+  SheetNamed (Just tab) wanted -> case tabById tab state of
+    Nothing -> stay state
+    Just found
+      | tabName found == wanted -> stay state
+      | not (validSheetName wanted) ->
+          after state (Notify "A sheet needs a name, and not one with a / in it")
+      | wanted `elem` tabOrder state ->
+          after state (Notify (T.pack ("This workbook already has a sheet called "
+                                       ++ wanted)))
+      | otherwise ->
+          let renamed = withTab tab (\t -> t { tabName = wanted }) state
+          in Step renamed (map Now
+               (  writeWorkbook renamed
+               ++ [ Request [(Op.Rename (tabName found) wanted, Snapshot tab Nothing)] ]))
 
   --
   -- The cell editor
@@ -358,8 +360,7 @@ carrying state tab out = case out of
     [ Now (OpenCellEditor tab r (lookup (refName r) (tabSources found)))
     | found <- maybeToList (tabById tab state) ]
   Ask Layout ->
-    [ Settle (layoutKey tab) (SaveSheet folder sheet)
-    | (folder, sheet) <- maybeToList (sheetToWrite state tab) ]
+    [ Settle (layoutKey tab) effect | effect <- writeWorkbook state ]
   Ask (Clear r) -> asked state tab $ \name ->
     (Op.SetCell name (refName r) "", CellSet tab (refName r))
   Ask (Move axis from to) -> asked state tab $ \name ->
@@ -403,19 +404,19 @@ answered state tag payload = case tag of
                                            (withActive (Ref 0 0) (tabGrid t)) }) taken
     in Step started (map Now
          (  paletteIfNew state started
-         ++ if fresh then writeSheet started tab else writeIfRewritten started tab payload))
+         ++ if fresh then writeWorkbook started else writeIfRewritten started payload))
 
   Reopened tab kept ->
     let taken = snapshotInto tab payload state
         back = withTab tab (\t -> t { tabGrid = fromMaybe (tabGrid t)
                                         (withActive kept (tabGrid t)) }) taken
-    in Step back (map Now (paletteIfNew state back ++ writeIfRewritten back tab payload))
+    in Step back (map Now (paletteIfNew state back ++ writeIfRewritten back payload))
 
   Snapshot tab said ->
     let taken = snapshotInto tab payload state
     in Step taken (map Now
          (  paletteIfNew state taken
-         ++ writeIfRewritten taken tab payload
+         ++ writeIfRewritten taken payload
          ++ map Notify (maybeToList said) ))
 
   CellSet tab name ->
@@ -425,10 +426,7 @@ answered state tag payload = case tag of
         taken = snapshotInto tab payload kept
     in Step taken (map Now
          (  paletteIfNew state taken
-         ++ [ SaveCell folder name source
-            | found <- maybeToList (tabById tab taken)
-            , folder <- maybeToList (sheetFolder taken found) ]
-         ++ writeIfRewritten taken tab payload ))
+         ++ writeWorkbook taken ))
 
   -- The editor's own question, which changes nothing here.
   Previewing _ mine -> after state $ ShowPreview mine
@@ -450,20 +448,23 @@ paletteIfNew before after' =
 -- | An answer that rewrote cell sources is one the folder has to be told
 -- about: moving a row or renaming a sheet changes what cells say, here and on
 -- every sheet that named this one.
-writeIfRewritten :: State -> TabId -> Sexp -> [Effect]
-writeIfRewritten state tab payload =
-  if isJust (lookupKey "sources" payload) then writeSheet state tab else []
+writeIfRewritten :: State -> Sexp -> [Effect]
+writeIfRewritten state payload =
+  if isJust (lookupKey "sources" payload) then writeWorkbook state else []
 
--- | A whole sheet, as a folder to write into and what to write.
-writeSheet :: State -> TabId -> [Effect]
-writeSheet state tab = [ SaveSheet folder sheet
-                       | (folder, sheet) <- maybeToList (sheetToWrite state tab) ]
+-- | Write the workbook out.
+--
+-- There is one way to write and one thing to write: a workbook is one file,
+-- so a cell, a column width and the order of the tabs all reach the disk the
+-- same way.  Which tab asked is no longer of any interest.
+writeWorkbook :: State -> [Effect]
+writeWorkbook state =
+  [ SaveWorkbook open (bookOf state) | open <- maybeToList (stateWorkbook state) ]
 
-sheetToWrite :: State -> TabId -> Maybe (FilePath, Sheet)
-sheetToWrite state tab = do
-  found <- tabById tab state
-  folder <- sheetFolder state found
-  pure (folder, sheetOfTab state found)
+-- | The workbook as the file should hold it.
+bookOf :: State -> Book
+bookOf state = Book [ (tabName t, sheetOfTab state t) | t <- stateTabs state ]
+                    (tabName <$> currentTab state)
 
 -- | A tab as the folder holds it.
 sheetOfTab :: State -> Tab -> Sheet
@@ -511,11 +512,6 @@ othersFrom payload state = foldl into state others
 --
 -- The folder
 --
-
-sheetFolder :: State -> Tab -> Maybe FilePath
-sheetFolder state tab = do
-  open <- stateWorkbook state
-  pure (workbookSheetDirectory open (tabName tab))
 
 emptySheet :: Sheet
 emptySheet = Sheet [] defaultRows defaultColumns []
@@ -589,11 +585,12 @@ acting state = \case
 
   EditCell -> editing state
 
-  -- An empty cell has no file, and no program can be handed a path that is not
-  -- there, so opening one is what brings its file into being.
+  -- A cell has no file of its own any more, so one is written somewhere
+  -- temporary and read back when the editor is done with it.
   OpenCellElsewhere -> onSheet $ withSheet $ \tab ->
-    Step state [ Now (OpenCellFile folder (activeOf tab) (stateConfig state))
-               | folder <- maybeToList (sheetFolder state tab) ]
+    after state (OpenCellFile (tabId tab) (activeOf tab)
+                   (fromMaybe "" (lookup (refName (activeOf tab)) (tabSources tab)))
+                   (stateConfig state))
 
   MoveLine axis delta -> onSheet $ withSheet $ \tab ->
     let from = along axis tab

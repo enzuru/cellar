@@ -6,57 +6,84 @@
 # written out here instead -- which is arguably the better test anyway: it
 # means the format the tests assume is the format as documented, not whatever
 # the code happens to produce.
+#
+# A workbook is one file.  Rather than edit that file in place, which means
+# counting parentheses, each of these records what the workbook should hold in
+# a scratch folder beside it and writes the whole file out again.
 
-# cellar_sheet <sheet-directory> <rows> <columns>
-# Make an empty sheet folder.
-cellar_sheet () {
-  local directory="$1" rows="$2" columns="$3"
-  mkdir -p "$directory/cells"
-  cat > "$directory/sheet.scm" <<EOF
-;; A Cellar sheet. The cells are in cells/, one file each.
-((format . 1)
- (rows . $rows)
- (columns . $columns)
- (widths))
-EOF
+# Where the sheets and cells of a workbook are remembered between calls.
+_cellar_state () {
+  printf '%s/.%s.fixture' "$(dirname "$1")" "$(basename "$1")"
 }
 
-# cellar_cell <sheet-directory> <name> <source>
-cellar_cell () {
-  printf '%s\n' "$3" > "$1/cells/$2.scm"
+# Write the file from what has been recorded.
+_cellar_write () {
+  local workbook="$1" state sheet
+  state=$(_cellar_state "$workbook")
+  {
+    echo ";; A Cellar workbook: every sheet, and every cell of each."
+    echo "((format . 3)"
+    printf ' (active . "%s")\n' "$(cat "$state/active")"
+    printf ' (sheets'
+    while IFS= read -r sheet; do
+      printf '\n  ("%s"\n' "$sheet"
+      echo "   (rows . 100)"
+      echo "   (columns . 26)"
+      echo "   (widths)"
+      if [ -s "$state/cells/$sheet" ]; then
+        printf '   (cells\n'
+        # In a substitution, so that the trailing newline goes and the
+        # parenthesis that closes the sheet lands on the same line.
+        printf '%s' "$(sed 's/^/    /' "$state/cells/$sheet" | sed '$ s/$/)/')"
+      else
+        printf '   (cells)'
+      fi
+      printf ')'
+    done < "$state/sheets"
+    echo '))'
+  } > "$workbook"
 }
 
-# cellar_workbook <workbook-directory> <sheet> [<sheet>...]
-# Make a workbook of the current format with one folder per sheet named.
+# cellar_workbook <workbook-file> <sheet> [<sheet>...]
+# Make a workbook holding one empty sheet per name, showing the first.
 cellar_workbook () {
   local workbook="$1"; shift
-  local first="$1"
-  mkdir -p "$workbook/sheets"
-  {
-    echo ";; A Cellar workbook. Each sheet is a folder under sheets/."
-    echo "((format . 2)"
-    echo " (sheets"
-    for sheet in "$@"; do printf '  "%s"\n' "$sheet"; done
-    echo " )"
-    printf ' (active . "%s"))\n' "$first"
-  } > "$workbook/workbook.scm"
+  local state sheet
+  state=$(_cellar_state "$workbook")
+  rm -rf "$state"
+  mkdir -p "$state/cells" "$(dirname "$workbook")"
+  printf '%s\n' "$1" > "$state/active"
+  : > "$state/sheets"
   for sheet in "$@"; do
-    cellar_sheet "$workbook/sheets/$sheet" 100 26
+    printf '%s\n' "$sheet" >> "$state/sheets"
+    : > "$state/cells/$sheet"
   done
+  _cellar_write "$workbook"
 }
 
-# cellar_active <workbook-directory> <sheet>
-# Rewrite the index so that a named sheet is the one showing.
+# cellar_cell <workbook-file> <sheet> <name> <source>
+cellar_cell () {
+  local workbook="$1" sheet="$2" name="$3" source="$4" state escaped
+  state=$(_cellar_state "$workbook")
+  escaped=$(printf '%s' "$source" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  printf '("%s" . "%s")\n' "$name" "$escaped" >> "$state/cells/$sheet"
+  _cellar_write "$workbook"
+}
+
+# cellar_add_sheet <workbook-file> <sheet>
+# Add an empty sheet, the way somebody else's commit would.
+cellar_add_sheet () {
+  local workbook="$1" sheet="$2" state
+  state=$(_cellar_state "$workbook")
+  printf '%s\n' "$sheet" >> "$state/sheets"
+  : > "$state/cells/$sheet"
+  _cellar_write "$workbook"
+}
+
+# cellar_active <workbook-file> <sheet>
 cellar_active () {
-  local workbook="$1" active="$2"
-  local sheets
-  sheets=$(sed -n '/(sheets/,/)/p' "$workbook/workbook.scm" | grep '"' || true)
-  {
-    echo ";; A Cellar workbook. Each sheet is a folder under sheets/."
-    echo "((format . 2)"
-    echo " (sheets"
-    printf '%s\n' "$sheets"
-    echo " )"
-    printf ' (active . "%s"))\n' "$active"
-  } > "$workbook/workbook.scm"
+  local workbook="$1" state
+  state=$(_cellar_state "$workbook")
+  printf '%s\n' "$2" > "$state/active"
+  _cellar_write "$workbook"
 }

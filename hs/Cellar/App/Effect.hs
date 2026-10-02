@@ -28,7 +28,7 @@ import Cellar.App.State (State, Tag, TabId)
 import Cellar.Config (Config)
 import Cellar.Ref (Axis, Ref)
 import Cellar.Op (Op)
-import Cellar.Store (Sheet, Workbook)
+import Cellar.Store (Book, Workbook)
 
 data Effect
   = Emit Event
@@ -76,7 +76,11 @@ data Effect
   | NeverMindKernel
   | OpenCellEditor TabId Ref (Maybe String)
     -- ^ The tab, the cell, and what is in it.
-  | OpenCellFile FilePath Ref Config
+  | OpenCellFile TabId Ref String Config
+    -- ^ Hand a cell to the editor in the preferences.  A cell has no file of
+    -- its own any more, so one is written somewhere temporary and read back
+    -- when the editor is done with it: the tab, the cell, what is in it now,
+    -- and where to find the editor.
   | ShowPreview Int String Bool
     -- ^ Hand the editor what its numbered question came to, and whether the
     -- answer is an error.  Nothing at all when no editor is up.
@@ -84,31 +88,25 @@ data Effect
     -- preferences, or to the desktop when there is none.
 
   --
-  -- The folder on disk
+  -- The file on disk
   --
-  | SaveSheet FilePath Sheet
-    -- ^ Write a whole sheet: the size, the widths, and a file per cell.
-  | SaveCell FilePath String (Maybe String)
-    -- ^ Write one cell's file, or take it away when the cell is empty.
+  | SaveWorkbook Workbook Book
+    -- ^ Write the whole workbook.  A workbook is one file, so there is no
+    -- smaller thing to write: a cell, a column width and the order of the
+    -- tabs all reach the disk the same way.
   | SaveConfig Config
   | Watch Workbook
-    -- ^ Watch this workbook's folders for changes made behind our back.
-  | SetActiveSheet Workbook String
-  | SetSheetOrder Workbook [String]
+    -- ^ Watch the workbook file for changes made behind our back.
   | ReadWorkbookAt FilePath Opening
     -- ^ Read a workbook off the disk and say what to do with it.
-  | ReadSheetsOf Workbook
-    -- ^ Read every sheet of the workbook that is open, and say whether the
-    -- sheets themselves changed.
-  | MakeWorkbook FilePath Bool
-    -- ^ Make a workbook here, and a git repository around it when asked.
+  | ReadWorkbookAgain Workbook
+    -- ^ Read the open workbook again, because the file changed under us.
+  | MakeWorkbook FilePath
+    -- ^ Make a workbook here, holding one empty sheet.
   | MakeScratch
     -- ^ Make a workbook to think in, somewhere out of the way.
-  | CopyWorkbook FilePath [(String, Sheet)] (Maybe String) Bool
-    -- ^ Write these sheets into a new workbook, showing this one.
-  | AddSheetFolder Workbook String
-  | RenameSheetFolder Workbook TabId String String
-  | RemoveSheetFolder Workbook TabId String
+  | CopyWorkbook FilePath Book
+    -- ^ Write this workbook out somewhere else, and open it there.
   deriving (Eq, Show)
 
 -- | One thing to do, and when.

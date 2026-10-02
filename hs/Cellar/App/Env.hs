@@ -37,6 +37,7 @@ module Cellar.App.Env
   , askAboutTheKernel
   , neverMindTheKernel
   , openEditor
+  , watchCellFile
   , showPreview
   , showPalette
   , fillRecentMenu
@@ -52,6 +53,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import System.FilePath ((</>), takeFileName)
 
 import Data.GI.Base
@@ -69,7 +71,8 @@ import Cellar.Op (Op, opArguments, opName)
 import Cellar.Editor
 import Cellar.Grid.Gestures
 import Cellar.Ref
-import Cellar.Store (workbookFolderName)
+import Cellar.Store (workbookFileName)
+import Cellar.Watch (Watcher, unwatch, watchPaths)
 
 data Env = Env
   { envKernel :: Kernel
@@ -93,6 +96,14 @@ data Env = Env
     -- that: the update changes the state by handing an event back, which is
     -- one turn of the loop too late.
   , envTags :: IORef (M.Map RequestId Tag)
+    -- | The file a cell was written to for an editor outside Cellar, and the
+    -- watcher that brings back what the editor made of it.  One at a time:
+    -- opening another cell takes the place of this one, which is also what
+    -- stops a watcher outliving the edit it was for.
+    --
+    -- This is the shape the workbook watcher had before it became a
+    -- subscription of the loop's, and it could become one the same way.
+  , envCellEdit :: IORef (Maybe Watcher)
     -- | The cell editor's way of being handed an answer, while one is up.
     -- One slot rather than a map of pending questions: there is at most one
     -- editor, its questions go out through the loop like everything else, and
@@ -130,6 +141,7 @@ newEnv kernel poster uiDirectory builder = do
     <*> newIORef Nothing
     <*> newIORef M.empty
     <*> newIORef M.empty
+    <*> newIORef Nothing
     <*> newIORef Nothing
     <*> pure section
     <*> newIORef Nothing
@@ -252,14 +264,13 @@ askNewWorkbook env suggestion location copying = onMain $ do
   nameEntry <- object (envBuilder env) "new_sheet_name" Gtk.Entry
   locationButton <- object (envBuilder env) "new_sheet_location" Gtk.Button
   locationLabel <- object (envBuilder env) "new_sheet_location_label" Gtk.Label
-  gitToggle <- object (envBuilder env) "new_sheet_git" Gtk.CheckButton
   set dialog
     [ #heading := if copying then "Copy Workbook To" else "New Workbook"
     , #body := if copying
         then "The workbook is written to a new folder, and that is the one you \
              \carry on editing. The folder you were in is left as it stands."
-        else "A workbook is a folder, and a Git repository worth making one of: \
-             \a folder for each sheet in it, and one small file for every cell." ]
+        else "A workbook is one file, holding every sheet and every cell of \
+             \each." ]
   Adw.alertDialogSetResponseLabel dialog "create" (if copying then "Copy" else "Create")
   Gtk.editableSetText nameEntry (T.pack suggestion)
   Gtk.labelSetLabel locationLabel (T.pack location)
@@ -271,11 +282,10 @@ askNewWorkbook env suggestion location copying = onMain $ do
     when (response == "create") $ do
       typed <- T.unpack . T.strip <$> Gtk.editableGetText nameEntry
       chosen <- T.unpack <$> Gtk.labelGetLabel locationLabel
-      wantsGit <- Gtk.checkButtonGetActive gitToggle
-      -- A workbook is a folder whose name ends in .cellar, which is what the
+      -- A workbook is a file whose name ends in .cellar, which is what the
       -- desktop and the shell both go by.
       let name = if null typed then "workbook" else typed
-      post env (WorkbookMade (chosen </> workbookFolderName name) copying wantsGit)
+      post env (WorkbookMade (chosen </> workbookFileName name) copying)
 
 -- | A tab's close button, or Delete Sheet.  A tab is a sheet of the workbook
 -- rather than a view of one, so closing it is deleting it.
@@ -444,6 +454,18 @@ openEditor env tab r source = onMain $ do
       (\text -> post env (CellEdited tab r text))
       (writeIORef (envEditor env) Nothing)
     writeIORef (envEditor env) (Just answer)
+
+-- | Watch the file a cell was written to, and bring back what comes of it.
+watchCellFile :: Env -> TabId -> Ref -> FilePath -> IO ()
+watchCellFile env tab r file = do
+  previous <- readIORef (envCellEdit env)
+  forM_ previous unwatch
+  watcher <- watchPaths [file] $ do
+    outcome <- try (TIO.readFile file)
+    case outcome :: Either SomeException Text of
+      Left _ -> pure ()
+      Right text -> post env (CellEdited tab r (T.unpack (T.stripEnd text)))
+  writeIORef (envCellEdit env) (Just watcher)
 
 -- | Hand the editor what its question came to, if one is still up.
 showPreview :: Env -> Int -> Preview -> IO ()

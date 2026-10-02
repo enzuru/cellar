@@ -66,8 +66,8 @@ settle () {  # settle <seconds> <test...>
 
 BOOK="$OUT/menus.cellar"
 cellar_workbook "$BOOK" "Summary"
-SHEET="$BOOK/sheets/Summary"
-cellar_cell "$SHEET" A1 '"first"'
+SHEET="Summary"
+cellar_cell "$WORKBOOK" "$SHEET" A1 '"first"'
 
 dbus-run-session -- "$CELLAR" "$BOOK" > "$OUT/app.log" 2>&1 &
 APP=$!
