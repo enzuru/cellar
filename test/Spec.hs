@@ -607,6 +607,44 @@ main = do
   check failures "and the file says which format it is"
     True ("(format . 3)" `isInfixOf` bookText book)
 
+  section "opening what is already on disk"
+  older <- makeTemporaryDirectory
+  do let folder = older </> "old.cellar"
+     -- A format 2 workbook: a folder of sheet folders, with a repository
+     -- inside it, which is where the old format put one.
+     createDirectoryIfMissing True (folder </> ".git")
+     writeFile (folder </> ".git" </> "HEAD") "ref: refs/heads/master\n"
+     _ <- createWorkbook folder "Summary"
+     (added, _) <- addWorkbookSheet' folder "Q1"
+     saveSheet (workbookSheetDirectory added "Summary")
+               (Sheet [("A1", "\"kept\"")] 40 5 [(2, 150)])
+     found <- open folder
+     check failures "an old folder workbook still opens" True (isJust (Just found))
+     book <- readBook found
+     -- Adding a sheet makes it the one showing, which is what the index
+     -- said and so what the value says.
+     check failures "and reads as the same value a file would"
+       (["Summary", "Q1"], Just "Q1")
+       (map fst (bookSheets book), bookActive book)
+     check failures "with the cells it held"
+       (Just [("A1", "\"kept\"")])
+       (lookup "Summary" (bookSheets book) >>= Just . sheetCells)
+
+     -- Writing converts it.  The folder is moved aside, never removed: it may
+     -- be a Git repository, and taking somebody's history away to change a
+     -- file format would be unforgivable.
+     (converted, aside) <- writeBook found book
+     isFile <- doesFileExist (workbookRoot converted)
+     check failures "writing turns the folder into a file" True isFile
+     check failures "at the same path" folder (workbookRoot converted)
+     check failures "and the old folder is kept, not removed" True (isJust aside)
+     forM_ aside $ \kept -> do
+       stillThere <- doesFileExist (kept </> ".git" </> "HEAD")
+       check failures "with the repository that was inside it" True stillThere
+     again <- open folder
+     reread <- readBook again
+     check failures "the file that comes out reads back the same" book reread
+
   section "the store"
   root <- makeTemporaryDirectory
   let inRoot = (root </>)
@@ -904,6 +942,12 @@ check failures label expected actual
 
 section :: String -> IO ()
 section title = putStrLn ("-- " ++ title)
+
+-- | Add a sheet to a workbook named by its folder.
+addWorkbookSheet' :: FilePath -> String -> IO (Workbook, String)
+addWorkbookSheet' folder name = do
+  workbook <- open folder
+  addWorkbookSheet workbook name
 
 -- | Resolve a workbook the tests have just made, and be loud if it is not one.
 open :: FilePath -> IO Workbook

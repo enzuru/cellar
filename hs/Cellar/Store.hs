@@ -41,6 +41,9 @@ module Cellar.Store
     -- * Workbooks
   , Workbook (..)
   , SheetLayout (..)
+  , readBook
+  , writeBook
+  , workbookExtension
   , resolveWorkbook
   , workbookDirectory
   , isWorkbookDirectory
@@ -70,10 +73,10 @@ import Data.Char (isDigit, toLower)
 import Data.List (isSuffixOf, sort, sortOn)
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.Directory
+import qualified Data.Text.IO as TIO
 import System.FilePath ((</>), takeFileName, takeDirectory, takeExtension)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
 import System.IO (IOMode (..), hSetEncoding, utf8, withFile, hPutStr)
 
 import Cellar.Ref
@@ -87,6 +90,10 @@ cellsDirectory = "cells"
 
 cellSuffix :: String
 cellSuffix = ".scm"
+
+-- | What a workbook file is called.
+workbookExtension :: String
+workbookExtension = ".cellar"
 
 workbookFile :: String
 workbookFile = "workbook.scm"
@@ -189,6 +196,57 @@ parseBook text = do
                       , Pair (Num column) (Num pixels) <- entries ]
       })
     sheetOf _ = Nothing
+
+-- | Read a workbook, whatever shape it is in on disk.
+--
+-- One file, a folder of sheet folders, or the single sheet a workbook from
+-- before tabs was.  All three answer with the same value, which is what lets
+-- everything above this stop caring.
+readBook :: Workbook -> IO Book
+readBook workbook = case workbookLayout workbook of
+  OneFile -> do
+    text <- TIO.readFile (workbookRoot workbook)
+    case parseBook text of
+      Left why -> refuse (workbookRoot workbook ++ " is not a Cellar workbook: " ++ why)
+      Right book -> pure book
+  _ -> do
+    names <- workbookSheetNames workbook
+    active <- workbookActiveSheet workbook
+    sheets <- forM names $ \name ->
+      (,) name <$> readSheet (workbookSheetDirectory workbook name)
+    pure (Book sheets active)
+
+-- | Write a workbook out, as one file, and say where it ended up.
+--
+-- A workbook that was a folder is converted here, and the folder is moved
+-- aside rather than taken away.  A folder may be a Git repository -- the old
+-- format put @.git@ inside it -- and removing somebody's history to change a
+-- file format would be unforgivable.  The caller is told the new workbook and
+-- can say where the old folder went.
+writeBook :: Workbook -> Book -> IO (Workbook, Maybe FilePath)
+writeBook workbook book = case workbookLayout workbook of
+  OneFile -> do
+    writeIfChanged (workbookRoot workbook) (bookText book)
+    pure (workbook, Nothing)
+  _ -> do
+    let folder = workbookRoot workbook
+    aside <- freeName (folder ++ ".folder")
+    -- Written beside the folder first, so that a failure part way through
+    -- leaves the folder where it is and nothing is lost.
+    let pending = folder ++ ".writing"
+    writeFile pending (bookText book)
+    renameDirectory folder aside
+    renamePath pending folder
+    pure (Workbook folder OneFile, Just aside)
+
+-- | A path like this one that nothing is using.
+freeName :: FilePath -> IO FilePath
+freeName wanted = go (wanted : [ wanted ++ "-" ++ show n | n <- [2 :: Int ..] ])
+  where
+    go [] = pure wanted
+    go (candidate : rest) = do
+      used <- doesPathExist candidate
+      if used then go rest else pure candidate
 
 -- Paths
 
@@ -421,8 +479,12 @@ data Workbook = Workbook
 
 -- | Where a workbook keeps its sheets.
 data SheetLayout
-    -- | The current format: a folder each, under @sheets/@.
-  = SheetsUnder
+    -- | The current format: the whole workbook is one file, and
+    -- 'workbookRoot' is that file.
+  = OneFile
+    -- | Written when a sheet was a folder of cells: a folder each, under
+    -- @sheets/@.
+  | SheetsUnder
     -- | Written before there were tabs: one sheet, lying at the top of the
     -- workbook's own folder, and named after it.
   | SingleSheet String
@@ -435,6 +497,16 @@ data SheetLayout
 -- in.  Everything after it is told.
 resolveWorkbook :: FilePath -> IO (Maybe Workbook)
 resolveWorkbook path = do
+  -- A file first: that is what a workbook is now, and a folder of the same
+  -- name is something written by an older Cellar.
+  isFile <- doesFileExist path
+  if isFile && takeExtension path == workbookExtension
+    then pure (Just (Workbook path OneFile))
+    else asFolder path
+
+-- | A workbook written by an older Cellar, which was a folder.
+asFolder :: FilePath -> IO (Maybe Workbook)
+asFolder path = do
   directory <- workbookDirectory path
   isDir <- doesDirectoryExist directory
   if not isDir then pure Nothing else do
@@ -452,6 +524,7 @@ isFormatOne :: Workbook -> Bool
 isFormatOne workbook = case workbookLayout workbook of
   SingleSheet _ -> True
   SheetsUnder -> False
+  OneFile -> False
 
 -- | What to call the workbook in a window title.
 workbookName :: Workbook -> String
@@ -464,6 +537,7 @@ workbookName = takeFileName . workbookRoot
 -- settled when the workbook was opened.
 workbookSheetDirectory :: Workbook -> String -> FilePath
 workbookSheetDirectory workbook name = case workbookLayout workbook of
+  OneFile -> workbookRoot workbook
   SingleSheet _ -> workbookRoot workbook
   SheetsUnder -> workbookRoot workbook </> sheetsDirectory </> name
 
@@ -547,6 +621,14 @@ createWorkbook directory rawName = do
 -- as though it had one naming its single sheet.
 readWorkbookIndex :: Workbook -> IO Sexp
 readWorkbookIndex workbook = case workbookLayout workbook of
+  -- A file holds its order and its active sheet inside itself, so the index
+  -- is read out of it rather than from a file beside it.
+  OneFile -> do
+    book <- readBook workbook
+    pure (list ([ Pair (Sym "format") (Num bookFormat)
+                , list (Sym "sheets" : map (Str . fst) (bookSheets book)) ]
+                ++ [ Pair (Sym "active") (Str active)
+                   | Just active <- [bookActive book] ]))
   SingleSheet name ->
     pure (list [ Pair (Sym "format") (Num 1)
                , list [Sym "sheets", Str name]
@@ -582,6 +664,7 @@ indexSheetNames index = case lookupKey "sheets" index >>= toList of
 -- | The sheets that actually have a folder with a sheet in it.
 storedSheetNames :: Workbook -> IO [String]
 storedSheetNames workbook = case workbookLayout workbook of
+  OneFile -> map fst . bookSheets <$> readBook workbook
   SingleSheet name -> pure [name]
   SheetsUnder -> do
     folders <- sheetFolderNames workbook
@@ -591,6 +674,7 @@ storedSheetNames workbook = case workbookLayout workbook of
 -- it yet.
 sheetFolderNames :: Workbook -> IO [String]
 sheetFolderNames workbook = case workbookLayout workbook of
+  OneFile -> pure []
   SingleSheet _ -> pure []
   SheetsUnder -> do
     let sheets = workbookRoot workbook </> sheetsDirectory
@@ -709,6 +793,7 @@ addWorkbookSheet workbook rawName = do
     refuse "A sheet needs a name, and not one with a / in it"
   let name = trim rawName
   moved <- case workbookLayout workbook of
+    OneFile -> pure workbook
     SingleSheet only -> migrateWorkbook workbook only
     SheetsUnder -> pure workbook
   clash <- taken moved name
@@ -732,6 +817,7 @@ renameWorkbookSheet workbook old rawNew = do
   let new = trim rawNew
   if old == new then pure (workbook, new) else do
     moved <- case workbookLayout workbook of
+      OneFile -> pure workbook
       SingleSheet only -> migrateWorkbook workbook only
       SheetsUnder -> pure workbook
     clash <- taken moved new
