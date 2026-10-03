@@ -39,7 +39,7 @@ BUILD := .build
 SHELL_BIN := $(BUILD)/cellar
 
 .PHONY: all ui build run check check-shell check-properties check-kernel \
-        check-window coverage smoke clean
+        check-window coverage profile profile-heap smoke clean
 
 all: ui build
 
@@ -111,6 +111,40 @@ $(WINDOW_BIN): $(SOURCES) test/Window.hs
 	@mkdir -p $(BUILD)
 	ghc $(INCLUDES) -itest -outputdir $(BUILD)/window-objects -o $@ \
 	  test/Window.hs -threaded $(WARNINGS)
+
+# Where the time goes, from a real session.
+#
+# A build of its own, like the coverage one, so that `make build' stays the
+# fast gate.  It covers Cellar and gi-gtk4-declarative together, because the
+# Makefile compiles the library from source alongside Cellar, which is exactly
+# what makes the library's own costs visible here.
+#
+# -fprof-late rather than -fprof-auto: the cost centres go in after
+# optimisation, so the program that runs is the program that ships.
+# -fprof-auto inserts them first and blocks the inlining that would otherwise
+# happen, which measures a different program and blames the wrong things.
+#
+# The profile is written when the program exits, so quit with Ctrl+Q rather
+# than killing the window, or there will be nothing to read.
+PROFILE_BIN := $(BUILD)/cellar-prof
+
+profile: ui $(PROFILE_BIN)
+	./$(PROFILE_BIN) $(FILE) +RTS -p -s -RTS
+	@echo
+	@echo "wrote cellar-prof.prof -- the twenty costliest entries:"
+	@sed -n '/^COST CENTRE/,$$p' cellar-prof.prof | head -22
+
+# The same build, reporting what is on the heap rather than where the time
+# went.  -hc groups what is live by the cost centre that allocated it.
+profile-heap: ui $(PROFILE_BIN)
+	./$(PROFILE_BIN) $(FILE) +RTS -hc -p -s -RTS
+	@echo
+	@echo "wrote cellar-prof.hp and cellar-prof.prof"
+
+$(PROFILE_BIN): $(SOURCES)
+	@mkdir -p $(BUILD)
+	ghc $(INCLUDES) -prof -fprof-late -outputdir $(BUILD)/prof-objects -o $@ \
+	  hs/Main.hs -threaded -rtsopts $(WARNINGS)
 
 # What the tests reach, and what they do not.
 #
