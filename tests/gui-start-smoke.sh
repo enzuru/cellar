@@ -85,15 +85,14 @@ shot 3-named
 xdotool key Return; sleep 7
 shot 4-created
 
-SHEET="$HOME/budget.cellar/sheets/Sheet 1"
+BOOK="$HOME/budget.cellar"
+SHEET="Sheet 1"
 
-expect "the workbook folder was made" test -d "$HOME/budget.cellar"
-expect "with an index" test -f "$HOME/budget.cellar/workbook.scm"
-expect "naming its first sheet" contains "$HOME/budget.cellar/workbook.scm" '"Sheet 1"'
-expect "which has a folder" test -d "$SHEET"
-expect "and a primary file" test -f "$SHEET/sheet.scm"
-expect "and somewhere for the cells" test -d "$SHEET/cells"
-expect "and a git repository around the whole workbook" test -d "$HOME/budget.cellar/.git"
+expect "the workbook file was made" test -f "$BOOK"
+expect "and it is a file, not a folder" test ! -d "$BOOK"
+expect "naming its first sheet" contains "$BOOK" '"Sheet 1"'
+expect "with a size" contains "$BOOK" '(rows . '
+expect "and somewhere for the cells" contains "$BOOK" '(cells'
 
 # A cell, written the ordinary way. Nothing is saved afterwards, because there
 # is nothing to save: applying the edit is what put it on disk.
@@ -104,17 +103,16 @@ sleep 2
 xdotool key ctrl+Return; sleep 3
 shot 5-cell-written
 
-expect "the cell is a file of its own" test -f "$SHEET/cells/B2.scm"
-expect "holding its source" contains "$SHEET/cells/B2.scm" '(\* 6 7)'
-expect "and no file for a cell that holds nothing" test ! -f "$SHEET/cells/A1.scm"
-expect "the primary file knows the size" contains "$SHEET/sheet.scm" 'rows . 100'
-expect "and has a place for column widths" contains "$SHEET/sheet.scm" 'widths'
+expect "the cell is in the workbook" cellar_holds "$BOOK" "$SHEET" B2 '(* 6 7)'
+expect "and a cell that holds nothing is not" cellar_empty "$BOOK" "$SHEET" A1
+expect "the file knows the size" contains "$BOOK" '(rows . 100)'
+expect "and has a place for column widths" contains "$BOOK" '(widths'
 
 # Inserting a row changes the shape of the sheet, which is the primary file's
 # business rather than any cell's, and it reaches disk on its own too.
 echo "4. a grown sheet is grown on disk"
 xdotool key ctrl+alt+Down; sleep 3
-expect "the sheet is a row taller on disk" contains "$SHEET/sheet.scm" 'rows . 101'
+expect "the sheet is a row taller on disk" contains "$BOOK" '(rows . 101)'
 
 # Ctrl+S has nothing left to do, and says so rather than doing nothing quietly.
 echo "5. Ctrl+S explains itself"
@@ -135,7 +133,7 @@ shot 8-scratch-written
 SCRATCH="$HOME/.local/share/cellar/scratch"
 expect "the scratch workbook was given a folder" test -d "$SCRATCH"
 expect "and its cell is on disk, unasked" \
-  bash -c 'grep -rq "40 2" "$1"/*/sheets' _ "$SCRATCH"
+  bash -c 'grep -lq "40 2" "$1"/*.cellar' _ "$SCRATCH"
 
 echo
 echo "app log (excluding harmless environment noise):"

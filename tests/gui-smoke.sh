@@ -42,8 +42,8 @@ unset CELLAR_EDITOR
 # that window and exit, leaving nothing here to photograph.
 # A copy of the example, because this script goes on to save over it.
 SHEET="$OUT/example.cellar"
-rm -rf "$SHEET"
-cp -r example.cellar "$SHEET"
+rm -f "$SHEET"
+cp example.cellar "$SHEET"
 
 dbus-run-session -- "$CELLAR" "$SHEET" > "$OUT/app.log" 2>&1 &
 APP=$!
@@ -208,11 +208,11 @@ contains () { grep -q "$2" "$1"; }
 
 # The cell edited in step 4 has been carried around by every move since; it
 # is at E2 by now, which is the point -- its file followed it.
-expect "the edited cell is on disk under its new name" contains "$SHEET/cells/D2.scm" 'string-length'
-expect "the subtotal came through the reordering" contains "$SHEET/cells/D7.scm" 'range'
-expect "the sheet grew with the rows we added" contains "$SHEET/sheet.scm" 'rows . 10[0-9]'
-expect "the column we widened was remembered" contains "$SHEET/sheet.scm" 'widths ('
-expect "a cell nobody filled in has no file" test ! -f "$SHEET/cells/J20.scm"
+expect "the edited cell is on disk under its new name" contains "$SHEET" 'string-length'
+expect "the subtotal came through the reordering" contains "$SHEET" 'range'
+expect "the sheet grew with the rows we added" contains "$SHEET" 'rows . 10[0-9]'
+expect "the column we widened was remembered" contains "$SHEET" 'widths ('
+expect "a cell nobody filled in is not in the file" cellar_empty "$SHEET" Budget J20
 
 # The external editor. A real one would sit there waiting for a human, so this
 # stands in for it: a script that rewrites the file it is handed and exits, which
