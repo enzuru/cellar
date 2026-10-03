@@ -96,6 +96,20 @@ data Env = Env
     -- that: the update changes the state by handing an event back, which is
     -- one turn of the loop too late.
   , envTags :: IORef (M.Map RequestId Tag)
+    -- | The text Cellar last wrote to the workbook file.
+    --
+    -- A workbook is one file, so every save touches the one thing the watcher
+    -- is watching, and Cellar hears about its own writes.  Telling one of
+    -- those from somebody else's edit is what this is for: a change that
+    -- leaves the file saying exactly what we last wrote is our own, and there
+    -- is nothing to take in.
+    --
+    -- Under the folder format this came for free, because a cell edit wrote
+    -- one small file and the window had already applied it.  It does not any
+    -- more: a tab being switched rewrites every cell of every sheet, so a
+    -- save can wake the watcher while an edit is still in flight, and the
+    -- stale read would win.
+  , envWritten :: IORef (Maybe Text)
     -- | The file a cell was written to for an editor outside Cellar, and the
     -- watcher that brings back what the editor made of it.  One at a time:
     -- opening another cell takes the place of this one, which is also what
@@ -141,6 +155,7 @@ newEnv kernel poster uiDirectory builder = do
     <*> newIORef Nothing
     <*> newIORef M.empty
     <*> newIORef M.empty
+    <*> newIORef Nothing
     <*> newIORef Nothing
     <*> newIORef Nothing
     <*> pure section

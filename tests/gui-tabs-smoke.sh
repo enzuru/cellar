@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # Drive the tabs: switching between the sheets of a workbook, adding one, and
-# moving a workbook written before there were tabs into sheets/.
+# picking up a sheet that arrived in the file from outside.
 #
 # The third companion to gui-smoke.sh, which exercises the grid, and
 # gui-start-smoke.sh, which exercises the start page.  This one is about the
-# workbook: several sheets in one folder, which is one Git repository.
+# workbook: several sheets in one file.
 #
 # Run it from inside `nix develop`:
 #
@@ -76,10 +76,7 @@ cellar_cell "$WORKBOOK" "Q2" A1 '"Q2 sheet"'
 cellar_cell "$WORKBOOK" "Q2" B1 '2400'
 cellar_active "$WORKBOOK" Q1
 
-# A workbook in the format from before tabs: sheet.scm and cells/ at the top,
 # and no index above them.
-LEGACY="$OUT/legacy.cellar"
-cp -r example.cellar "$LEGACY"
 
 # dbus-run-session, because GApplication is single-instance: with a Cellar
 # already running on your session bus this one would hand its activation to
@@ -99,7 +96,7 @@ echo "1. the workbook opens on the sheet it was left on"
 xdotool mousemove 220 180 click 1; sleep 2
 shot 1-opened
 expect "the active sheet was remembered" \
-  contains "$WORKBOOK/workbook.scm" '(active . "Q1")'
+  contains "$WORKBOOK" '(active . "Q1")'
 
 # Ctrl+Page_Down and Ctrl+Page_Up walk the tabs.  Each sheet has its own model
 # and its own grid, so what the window shows should change completely.
@@ -107,12 +104,12 @@ echo "2. moving between sheets"
 xdotool key ctrl+Next; sleep 3
 shot 2-next-sheet
 expect "moving to a sheet is written down" \
-  contains "$WORKBOOK/workbook.scm" '(active . "Q2")'
+  contains "$WORKBOOK" '(active . "Q2")'
 
 xdotool key ctrl+Prior ctrl+Prior; sleep 3
 shot 3-first-sheet
 expect "and so is moving back" \
-  contains "$WORKBOOK/workbook.scm" '(active . "Summary")'
+  contains "$WORKBOOK" '(active . "Summary")'
 
 # Editing a cell writes it into that sheet's folder and no other.  Typing
 # straight into the grid is not a thing Cellar does, so this goes through the
@@ -124,12 +121,12 @@ xdotool key ctrl+a; sleep 1
 xdotool type --delay 30 '"edited on Summary"'
 sleep 2
 xdotool key ctrl+Return
-settle 30 contains "$WORKBOOK/sheets/Summary/cells/A1.scm" 'edited on Summary'
+settle 30 cellar_holds "$WORKBOOK" Summary A1 '"edited on Summary"'
 shot 4-edited
 expect "the cell went into the sheet that was showing" \
-  contains "$WORKBOOK/sheets/Summary/cells/A1.scm" 'edited on Summary'
+  cellar_holds "$WORKBOOK" Summary A1 '"edited on Summary"'
 expect "and not into any other sheet" \
-  contains "$WORKBOOK/sheets/Q1/cells/A1.scm" 'Q1 sheet'
+  cellar_holds "$WORKBOOK" Q1 A1 '"Q1 sheet"'
 
 # Ctrl+T adds a sheet.  The dialog suggests a name and Enter accepts it, so
 # this needs nothing typed.
@@ -137,12 +134,12 @@ echo "4. adding a sheet"
 xdotool key ctrl+t; sleep 4
 shot 5-add-dialog
 xdotool key Return
-settle 30 test -d "$WORKBOOK/sheets/Sheet 4"
+settle 30 contains "$WORKBOOK" '"Sheet 4"'
 shot 6-added
-expect "the new sheet has a folder" test -d "$WORKBOOK/sheets/Sheet 4"
-expect "with a primary file in it" test -f "$WORKBOOK/sheets/Sheet 4/sheet.scm"
+expect "the new sheet is in the file" contains "$WORKBOOK" '"Sheet 4"'
+expect "with a size of its own" contains "$WORKBOOK" '(rows . 100)'
 expect "and the index knows about it" \
-  contains "$WORKBOOK/workbook.scm" '"Sheet 4"'
+  contains "$WORKBOOK" '"Sheet 4"'
 
 # A sheet arriving from outside -- somebody else's commit, in practice. The
 # workbook folder is watched, so the tabs are rebuilt without being asked. The
@@ -164,53 +161,25 @@ shot 7-arrived
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
   xdotool key ctrl+Next
   sleep 4
-  if contains "$WORKBOOK/workbook.scm" '(active . "FromDisk")'; then break; fi
+  if contains "$WORKBOOK" '(active . "FromDisk")'; then break; fi
 done
 shot 8-on-arrived
 expect "the tab is there, and the keyboard reaches it" \
-  contains "$WORKBOOK/workbook.scm" '(active . "FromDisk")'
+  contains "$WORKBOOK" '(active . "FromDisk")'
 
 echo "6. the sheets are all still there"
-expect "Summary" test -d "$WORKBOOK/sheets/Summary"
-expect "Q1" test -d "$WORKBOOK/sheets/Q1"
-expect "Q2" test -d "$WORKBOOK/sheets/Q2"
+expect "Summary" contains "$WORKBOOK" '"Summary"'
+expect "Q1" contains "$WORKBOOK" '"Q1"'
+expect "Q2" contains "$WORKBOOK" '"Q2"'
 
 kill $APP 2>/dev/null
 wait $APP 2>/dev/null
 sleep 2
 
-# A workbook from before tabs opens where it lies, untouched, and is moved into
-# sheets/ only when a second sheet gives it a reason to be.
-echo "7. a workbook written before there were tabs"
-dbus-run-session -- "$CELLAR" "$LEGACY" > "$OUT/legacy.log" 2>&1 &
-APP=$!
-sleep 12
-
-xdotool mousemove 220 180 click 1; sleep 2
-shot 9-legacy-opened
-expect "it opened where it lies" test -f "$LEGACY/sheet.scm"
-expect "and was not rearranged on the way in" test ! -d "$LEGACY/sheets"
-
-echo "8. adding a sheet moves it into sheets/"
-xdotool key ctrl+t; sleep 4
-xdotool key Return
-settle 30 test -f "$LEGACY/workbook.scm"
-shot 10-legacy-migrated
-expect "the old sheet moved under its own name" \
-  test -f "$LEGACY/sheets/legacy/sheet.scm"
-expect "and brought its cells with it" \
-  test -f "$LEGACY/sheets/legacy/cells/A1.scm"
-expect "the top of the workbook is clear" test ! -f "$LEGACY/sheet.scm"
-expect "there is an index now" test -f "$LEGACY/workbook.scm"
-expect "naming both sheets" contains "$LEGACY/workbook.scm" '"legacy"'
-expect "the new sheet has a folder" test -d "$LEGACY/sheets/Sheet 2"
-
-kill $APP 2>/dev/null
-
 echo
 echo "app log (excluding harmless EGL noise):"
 grep -v "libEGL\|DRI3\|dbus-daemon\|atk-bridge\|AT-SPI\|portal\|fusermount\|Registry" \
-  "$OUT/app.log" "$OUT/legacy.log" | head -20
+  "$OUT/app.log" | head -20
 echo "screenshots in $OUT"
 
 if [ "$failures" -eq 0 ]; then

@@ -263,6 +263,24 @@ tests window root = do
   check window "a folder that is not a workbook is not opened" (Just "sales.cellar")
     (workbookName <$> stateWorkbook refused)
 
+  -- A workbook is one file, so every save touches the thing the watcher is
+  -- watching and Cellar hears about its own writes.  Reading one back would
+  -- be wasted work at best, and at worst a stale read landing on an edit that
+  -- is still in flight, which is what lost one.
+  section "Cellar hearing its own writes"
+  ownWrite <- stateOf window
+  forM_ (currentTab ownWrite) $ \tab -> do
+    happens window (CellEdited (tabId tab) (Ref 4 0) "\"mine\"")
+    _ <- settle window (holds (tabId tab) (Ref 4 0) "mine")
+    _ <- quiet window
+    -- The watcher fires for the save Cellar has just made.
+    happens window DiskChanged
+    _ <- quiet window
+    kept <- settle window (holds (tabId tab) (Ref 4 0) "mine")
+    check window "a write of Cellar's own does not come back at it" True kept
+    onFile <- cellOnDisk sales "Summary" "A5"
+    check window "and the file still says it" (Just "\"mine\"") onFile
+
   section "the file changing underneath"
   onDisk <- stateOf window
   forM_ (currentTab onDisk) $ \tab -> do
@@ -594,6 +612,7 @@ quietEnv kernel poster = do
   windowRef <- newIORef Nothing
   toastsRef <- newIORef Nothing
   gestures <- newIORef M.empty
+  written <- newIORef Nothing
   editor <- newIORef Nothing
   tags <- newIORef M.empty
   stall <- newIORef Nothing
@@ -606,6 +625,7 @@ quietEnv kernel poster = do
     , envToasts = toastsRef
     , envGestures = gestures
     , envTags = tags
+    , envWritten = written
     , envEditor = editor
     , envRecentSection = error "the tests draw nothing, so there is no menu"
     , envStallDialog = stall

@@ -19,8 +19,11 @@ module Cellar.App.Perform
 
 import Control.Exception (SomeException, try)
 import Control.Monad (void)
+import Data.IORef (readIORef, writeIORef)
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import System.Directory (createDirectoryIfMissing, doesPathExist, getTemporaryDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>), takeFileName)
@@ -95,16 +98,20 @@ perform env = \case
 
   SaveWorkbook open book -> do
     outcome <- try (writeBook open book)
-    pure $ case outcome :: Either SomeException () of
-      Left _ -> Just (Toast "Could not save the workbook")
-      Right () -> Nothing
+    case outcome :: Either SomeException () of
+      Left _ -> pure (Just (Toast "Could not save the workbook"))
+      Right () -> do
+        -- What the file says now, so that the watcher can tell this write
+        -- from somebody else's edit.
+        writeIORef (envWritten env) (Just (T.pack (bookText book)))
+        pure Nothing
 
   SaveConfig config -> nothing (quietly (saveConfig config))
   -- One file to watch now, which is the whole of it.
   Watch open -> pure (Just (Watching [workbookRoot open]))
 
   ReadWorkbookAt path how -> readWorkbookAt path how
-  ReadWorkbookAgain open -> readWorkbookAgain open
+  ReadWorkbookAgain open -> readWorkbookAgain env open
   MakeWorkbook path ->
     makeWorkbook env path False (void (createWorkbook path "Sheet 1"))
   MakeScratch -> makeScratch
@@ -141,12 +148,20 @@ readWorkbookAt path how = resolveWorkbook path >>= \case
 -- Answers with nothing at all when the file has gone: a workbook that is not
 -- there any more is not a change to report, and the window keeps showing what
 -- it was showing.
-readWorkbookAgain :: Workbook -> IO (Maybe Event)
-readWorkbookAgain open = do
-  outcome <- try (readBook open)
-  pure $ case outcome :: Either SomeException Book of
-    Left _ -> Nothing
-    Right book -> Just (SheetsOnDisk (bookSheets book))
+readWorkbookAgain :: Env -> Workbook -> IO (Maybe Event)
+readWorkbookAgain env open = do
+  outcome <- try (TIO.readFile (workbookRoot open))
+  case outcome :: Either SomeException Text of
+    Left _ -> pure Nothing
+    Right text -> do
+      ours <- readIORef (envWritten env)
+      -- Our own write, which the window has already applied.  Reading it back
+      -- would be at best wasted work and at worst a stale read landing on top
+      -- of an edit that is still in flight.
+      if Just text == ours then pure Nothing else
+        pure $ case parseBook text of
+          Left _ -> Nothing
+          Right book -> Just (SheetsOnDisk (bookSheets book))
 
 --
 -- Making a workbook
