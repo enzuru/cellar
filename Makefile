@@ -35,6 +35,24 @@ SOURCES := $(HASKELL) $(DECLARATIVE_SOURCES)
 WARNINGS := -Wall -Wcompat -Wincomplete-record-updates \
             -Wincomplete-uni-patterns -Wredundant-constraints
 
+# GHC optimises nothing unless it is asked, and for a long time this Makefile
+# did not ask, so the program people ran was the unoptimised one.  `cabal
+# build' asks for -O on its own, which is why only the Makefile build was
+# affected, and why nobody noticed.
+#
+# The same scripted session -- a workbook opened and the selection moved 600
+# times -- measured at each level:
+#
+#   -O0   0.68 s   431 MB allocated     clean build 31 s
+#   -O    0.41 s   237 MB allocated     clean build 71 s
+#   -O2   0.38 s   232 MB allocated     clean build 84 s
+#
+# So most of it is -O, and -O2 is thirteen seconds of compiling for about two
+# percent less allocation.  The test builds below are left alone: they are the
+# gate, there are three of them, and they are compiled far more often than
+# they are slow.
+OPTIMISATION := -O2
+
 BUILD := .build
 SHELL_BIN := $(BUILD)/cellar
 
@@ -52,7 +70,8 @@ build: $(SHELL_BIN)
 
 $(SHELL_BIN): $(SOURCES)
 	@mkdir -p $(BUILD)
-	ghc $(INCLUDES) -outputdir $(BUILD)/objects -o $@ hs/Main.hs -threaded $(WARNINGS)
+	ghc $(INCLUDES) $(OPTIMISATION) -outputdir $(BUILD)/objects -o $@ \
+	  hs/Main.hs -threaded $(WARNINGS)
 
 run: ui build
 	./$(SHELL_BIN) $(FILE)
@@ -124,6 +143,12 @@ $(WINDOW_BIN): $(SOURCES) test/Window.hs
 # -fprof-auto inserts them first and blocks the inlining that would otherwise
 # happen, which measures a different program and blames the wrong things.
 #
+# It is optimised for the same reason, and that is not a detail.  The first
+# profile taken here was of an -O0 build, and it blamed class dictionaries
+# being passed at runtime for an eighth of the time -- which is a true thing
+# to say about an unoptimised program and says nothing at all about the one
+# that ships.  Profile the program that runs.
+#
 # The profile is written when the program exits, so quit with Ctrl+Q rather
 # than killing the window, or there will be nothing to read.
 PROFILE_BIN := $(BUILD)/cellar-prof
@@ -143,7 +168,8 @@ profile-heap: ui $(PROFILE_BIN)
 
 $(PROFILE_BIN): $(SOURCES)
 	@mkdir -p $(BUILD)
-	ghc $(INCLUDES) -prof -fprof-late -outputdir $(BUILD)/prof-objects -o $@ \
+	ghc $(INCLUDES) $(OPTIMISATION) -prof -fprof-late \
+	  -outputdir $(BUILD)/prof-objects -o $@ \
 	  hs/Main.hs -threaded -rtsopts $(WARNINGS)
 
 # What the tests reach, and what they do not.

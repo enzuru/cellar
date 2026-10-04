@@ -45,6 +45,9 @@ library
 
 executable cellar
     import:           warnings
+    -- cabal asks for -O on its own, and this asks for the second level.  See
+    -- the measurement in the Makefile, which had been asking for neither.
+    ghc-options:      -O2
     hs-source-dirs:   hs
     main-is:          Main.hs
     other-modules:    Cellar.App
