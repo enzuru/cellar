@@ -68,7 +68,10 @@ ui/%.ui: ui/%.blp
 
 build: $(SHELL_BIN)
 
-$(SHELL_BIN): $(SOURCES)
+# Makefile is a prerequisite because it is where the flags live: changing
+# OPTIMISATION has to rebuild, and without this make would see a binary newer
+# than every source and do nothing.
+$(SHELL_BIN): $(SOURCES) Makefile
 	@mkdir -p $(BUILD)
 	ghc $(INCLUDES) $(OPTIMISATION) -outputdir $(BUILD)/objects -o $@ \
 	  hs/Main.hs -threaded $(WARNINGS)
@@ -166,7 +169,7 @@ profile-heap: ui $(PROFILE_BIN)
 	@echo
 	@echo "wrote cellar-prof.hp and cellar-prof.prof"
 
-$(PROFILE_BIN): $(SOURCES)
+$(PROFILE_BIN): $(SOURCES) Makefile
 	@mkdir -p $(BUILD)
 	ghc $(INCLUDES) $(OPTIMISATION) -prof -fprof-late \
 	  -outputdir $(BUILD)/prof-objects -o $@ \
