@@ -613,6 +613,7 @@ quietEnv kernel poster = do
   toastsRef <- newIORef Nothing
   gestures <- newIORef M.empty
   written <- newIORef Nothing
+  cellEdit <- newIORef Nothing
   editor <- newIORef Nothing
   tags <- newIORef M.empty
   stall <- newIORef Nothing
@@ -626,9 +627,11 @@ quietEnv kernel poster = do
     , envGestures = gestures
     , envTags = tags
     , envWritten = written
+    , envCellEdit = cellEdit
     , envEditor = editor
     , envRecentSection = error "the tests draw nothing, so there is no menu"
     , envStallDialog = stall
+    , envPalette = error "the tests draw nothing, so there is no stylesheet"
     }
 
 --
