@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLabels #-}
-
 -- | The parts of the grid GTK gives no declarative way to reach.
 --
 -- Three things need a gesture object inside their own handler, which a

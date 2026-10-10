@@ -1,6 +1,3 @@
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
 -- | The shell's end of the pipe.
 --
 -- Starts the kernel, sends it requests, and hands each reply to whoever asked

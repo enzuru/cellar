@@ -1,8 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 -- | The application: what starts, what it is called, and what the keys do.
 --
 -- Cellar's window is a function of one value.  This module makes the value,
@@ -287,7 +282,7 @@ installActions env application = do
   -- No Shift in that accelerator, on purpose.  A shortcut written with Shift
   -- and a punctuation key parses and then never fires, because the keyval
   -- under Shift is a different one; Ctrl+Shift+- was found that way.
-  forM_ [minBound .. maxBound] $ \aggregate ->
+  forM_ everyAggregate $ \aggregate ->
     define ("formula-" <> T.pack (aggregateName aggregate))
            [ "<Control>equal" | aggregate == Total ]
            (Formula aggregate)

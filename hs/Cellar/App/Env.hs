@@ -1,7 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 -- | The parts of the window that are not a function of its state.
 --
 -- A dialog is asked once and answered once, a toast appears and fades, a

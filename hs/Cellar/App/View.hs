@@ -1,7 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE OverloadedLists #-}
-
 -- | The window, as a function of what it is showing.
 --
 -- Every widget in Cellar is here, from the title down to a cell, and nothing

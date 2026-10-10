@@ -1,7 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 -- | How the window does what "Cellar.App.Update" asked for.
 --
 -- The update answers with values.  This is the only part of the window that

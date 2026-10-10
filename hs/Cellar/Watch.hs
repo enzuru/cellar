@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLabels #-}
-
 -- | Noticing that the workbook on disk has changed.
 --
 -- A workbook is a folder of ordinary files, so anything at all can change it:

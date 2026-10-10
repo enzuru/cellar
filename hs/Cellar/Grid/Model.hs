@@ -1,9 +1,10 @@
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLabels #-}
+-- StrictData, and not in cellar.cabal with the rest.  Applied to every
+-- module it stops the program: the Makefile compiles
+-- gi-gtk4-declarative's sources along with Cellar's, the library asks for
+-- it nowhere, and with it forced on the window never appears and the
+-- process leaves with status 0.  Measured on 2026-10-09.  So it stays
+-- here, on the two modules whose fields are worth being strict.
 {-# LANGUAGE StrictData #-}
-{-# LANGUAGE OverloadedLists #-}
 
 -- | The grid, as a value and a function.
 --

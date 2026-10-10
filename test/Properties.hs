@@ -1,5 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 -- | The laws, run against generated input.
 --
 -- The suite in @test/Spec.hs@ says what the rules are, one example at a time,
@@ -185,7 +183,7 @@ genRef :: Gen Ref
 genRef = Ref <$> genIndex <*> genIndex
 
 genAxis :: Gen Axis
-genAxis = Gen.element [Row, Column]
+genAxis = Gen.element ([Row, Column] :: [Axis])
 
 -- | A mix of names that are references and names that are not, so that the two
 -- halves are compared on what they refuse as well as on what they take.

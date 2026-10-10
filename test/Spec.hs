@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
 -- | Tests for the Haskell shell.
 --
 -- The pure parts are checked in this process.  The client is checked against
@@ -960,7 +959,7 @@ runKernelTests failures = do
       stalledNow <- stalled kernel 0.5
       check failures "and the kernel counts as stalled" True stalledNow
       -- Pumping over a wedged kernel has to return, every time.
-      forM_ [1 :: Int .. 50] (const drain)
+      forM_ ([1 .. 50] :: [Int]) (const drain)
       check failures "and the shell takes what there is without blocking" True True
 
       restartKernel kernel

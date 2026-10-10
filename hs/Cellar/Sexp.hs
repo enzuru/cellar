@@ -1,5 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 -- | S-expressions, as much of them as the wire needs.
 --
 -- Cellar's two halves talk in s-expressions, because the thing being talked

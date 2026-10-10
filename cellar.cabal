@@ -22,8 +22,30 @@ common warnings
                  -- lets a `select' on the pipe not stop the world.
                  -threaded
 
+-- What every module may assume, so that no module has to say it.
+--
+-- GHC2024 carries ScopedTypeVariables, LambdaCase, DerivingStrategies and
+-- GeneralizedNewtypeDeriving, which is why those are no longer written at the
+-- top of the files that use them.
+--
+-- The three below are in no edition and will not be in one, because each
+-- changes how an ordinary piece of syntax is read rather than adding syntax of
+-- its own.
+--
+-- StrictData is not among them, though it was tried here.  `make build'
+-- compiles the library's sources along with Cellar's in one ghc call and so
+-- cannot hand the two different extensions, the library asks for StrictData
+-- nowhere, and forcing it on both leaves a program that exits 0 without ever
+-- showing a window.  It stays written at the top of the two modules that want
+-- it.
+common language
+    default-language:   GHC2024
+    default-extensions: OverloadedStrings
+                        OverloadedLabels
+                        OverloadedLists
+
 library
-    import:           warnings
+    import:           warnings, language
     hs-source-dirs:   hs
     exposed-modules:  Cellar.Ref
                       Cellar.Sexp
@@ -41,10 +63,9 @@ library
                     , process
                     , text
                     , unix
-    default-language: Haskell2010
 
 executable cellar
-    import:           warnings
+    import:           warnings, language
     -- cabal asks for -O on its own, and this asks for the second level.  See
     -- the measurement in the Makefile, which had been asking for neither.
     ghc-options:      -O2
@@ -94,10 +115,9 @@ executable cellar
                     , async
                     , stm
                     , vector
-    default-language: Haskell2010
 
 test-suite cellar-test
-    import:           warnings
+    import:           warnings, language
     type:             exitcode-stdio-1.0
     hs-source-dirs:   hs, test
     main-is:          Spec.hs
@@ -117,4 +137,3 @@ test-suite cellar-test
                     , process
                     , text
                     , unix
-    default-language: Haskell2010

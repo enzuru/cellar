@@ -1,7 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 -- | What the window does about what happens to it.
 --
 -- One function, from a state and an event to the next state and whatever has

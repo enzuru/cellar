@@ -53,6 +53,23 @@ WARNINGS := -Wall -Wcompat -Wincomplete-record-updates \
 # they are slow.
 OPTIMISATION := -O2
 
+# The language, and the extensions no edition carries.
+#
+# One ghc call compiles both projects, so this list is the union of two sets
+# and cannot be only Cellar's.  Cabal gives each package its own
+# default-extensions; this has no way to, so the library's ten come along with
+# Cellar's four.  Keep them in step with the default-extensions in
+# cellar.cabal and in the library's own cabal files, or `make build' and
+# `cabal build' will disagree about what the language is.
+#
+# Cellar's own: StrictData, and the three Overloaded ones.
+# The library's: everything from AllowAmbiguousTypes to UndecidableInstances.
+LANGUAGE := -XGHC2024 \
+            -XOverloadedStrings -XOverloadedLabels -XOverloadedLists \
+            -XAllowAmbiguousTypes -XDefaultSignatures \
+            -XFunctionalDependencies -XMultiWayIf -XRecordWildCards \
+            -XTemplateHaskell -XTypeFamilies -XUndecidableInstances
+
 BUILD := .build
 SHELL_BIN := $(BUILD)/cellar
 
@@ -73,7 +90,7 @@ build: $(SHELL_BIN)
 # than every source and do nothing.
 $(SHELL_BIN): $(SOURCES) Makefile
 	@mkdir -p $(BUILD)
-	ghc $(INCLUDES) $(OPTIMISATION) -outputdir $(BUILD)/objects -o $@ \
+	ghc $(INCLUDES) $(LANGUAGE) $(OPTIMISATION) -outputdir $(BUILD)/objects -o $@ \
 	  hs/Main.hs -threaded $(WARNINGS)
 
 run: ui build
@@ -86,7 +103,7 @@ check: check-shell check-properties check-window check-kernel
 # preferences, and the client driving a real Guile kernel over a real pipe.
 check-shell:
 	@mkdir -p $(BUILD)
-	ghc $(INCLUDES) -itest -outputdir $(BUILD)/test-objects -o $(BUILD)/cellar-test \
+	ghc $(INCLUDES) $(LANGUAGE) -itest -outputdir $(BUILD)/test-objects -o $(BUILD)/cellar-test \
 	  test/Spec.hs -threaded $(WARNINGS)
 	GUILE_AUTO_COMPILE=0 ./$(BUILD)/cellar-test
 
@@ -106,7 +123,7 @@ check-properties: $(PROPERTIES_BIN)
 
 $(PROPERTIES_BIN): $(SOURCES) test/Properties.hs
 	@mkdir -p $(BUILD)
-	ghc $(INCLUDES) -itest -outputdir $(BUILD)/properties-objects -o $@ \
+	ghc $(INCLUDES) $(LANGUAGE) -itest -outputdir $(BUILD)/properties-objects -o $@ \
 	  test/Properties.hs -threaded $(WARNINGS)
 
 # The Guile half: the reference arithmetic it shares with the shell, the model
@@ -131,7 +148,7 @@ check-window: $(WINDOW_BIN)
 
 $(WINDOW_BIN): $(SOURCES) test/Window.hs
 	@mkdir -p $(BUILD)
-	ghc $(INCLUDES) -itest -outputdir $(BUILD)/window-objects -o $@ \
+	ghc $(INCLUDES) $(LANGUAGE) -itest -outputdir $(BUILD)/window-objects -o $@ \
 	  test/Window.hs -threaded $(WARNINGS)
 
 # Where the time goes, from a real session.
@@ -171,7 +188,7 @@ profile-heap: ui $(PROFILE_BIN)
 
 $(PROFILE_BIN): $(SOURCES) Makefile
 	@mkdir -p $(BUILD)
-	ghc $(INCLUDES) $(OPTIMISATION) -prof -fprof-late \
+	ghc $(INCLUDES) $(LANGUAGE) $(OPTIMISATION) -prof -fprof-late \
 	  -outputdir $(BUILD)/prof-objects -o $@ \
 	  hs/Main.hs -threaded -rtsopts $(WARNINGS)
 
@@ -193,13 +210,13 @@ INSTRUMENTED := $(filter-out hs/Main.hs,$(HASKELL))
 
 coverage:
 	@mkdir -p $(COVERAGE)
-	ghc $(INCLUDES) -itest -fhpc -hpcdir $(COVERAGE)/mix \
+	ghc $(INCLUDES) $(LANGUAGE) -itest -fhpc -hpcdir $(COVERAGE)/mix \
 	  -outputdir $(COVERAGE)/objects -o $(COVERAGE)/cellar-test \
 	  test/Spec.hs $(INSTRUMENTED) -threaded $(WARNINGS)
-	ghc $(INCLUDES) -itest -fhpc -hpcdir $(COVERAGE)/mix \
+	ghc $(INCLUDES) $(LANGUAGE) -itest -fhpc -hpcdir $(COVERAGE)/mix \
 	  -outputdir $(COVERAGE)/window-objects -o $(COVERAGE)/cellar-window-test \
 	  test/Window.hs $(INSTRUMENTED) -threaded $(WARNINGS)
-	ghc $(INCLUDES) -itest -fhpc -hpcdir $(COVERAGE)/mix \
+	ghc $(INCLUDES) $(LANGUAGE) -itest -fhpc -hpcdir $(COVERAGE)/mix \
 	  -outputdir $(COVERAGE)/properties-objects -o $(COVERAGE)/cellar-properties \
 	  test/Properties.hs $(INSTRUMENTED) -threaded $(WARNINGS)
 	@# The counts from the last run were taken against the last build, and

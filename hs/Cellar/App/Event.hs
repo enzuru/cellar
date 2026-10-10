@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 -- | Everything that can happen to the window.
 --
 -- One type for the lot: a key in the grid, an answer from the kernel, a
@@ -8,6 +7,7 @@ module Cellar.App.Event
   ( Event (..)
   , Opening (..)
   , Aggregate (..)
+  , everyAggregate
   , aggregateName
   , aggregateLabel
   , Action (..)
@@ -59,6 +59,14 @@ data Action
 -- cell.
 data Aggregate = Total | Average | Count | Smallest | Largest | Product
   deriving (Eq, Show, Enum, Bounded)
+
+-- | One of each, named rather than written out at the use sites.
+--
+-- A list literal has to say what it is a list of now that OverloadedLists is
+-- on for every module, and saying it once here is better than annotating a
+-- range wherever one is wanted.
+everyAggregate :: [Aggregate]
+everyAggregate = [minBound .. maxBound]
 
 -- | What it is called in a cell.
 aggregateName :: Aggregate -> String

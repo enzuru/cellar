@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLabels #-}
-
 -- | The cell editor.
 --
 -- Double-clicking a cell opens this: a GtkSourceView with Scheme highlighting

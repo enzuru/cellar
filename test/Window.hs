@@ -1,7 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 -- | Tests for the window, driven from code and without one.
 --
 -- The window is a function of one value now, so this suite hands events to
@@ -27,6 +23,9 @@ import System.Directory
 import System.Environment (setEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
+
+import qualified GI.Gio as Gio
+import qualified GI.Gtk as Gtk
 
 
 import Cellar.App.Env
@@ -217,7 +216,7 @@ tests window root = do
   section "a formula about a block"
   summing <- stateOf window
   forM_ (currentTab summing) $ \tab -> do
-    forM_ [(0, "2"), (1, "3"), (2, "4")] $ \(row, text) ->
+    forM_ ([(0, "2"), (1, "3"), (2, "4")] :: [(Int, String)]) $ \(row, text) ->
       happens window (CellEdited (tabId tab) (Ref row 0) text)
     _ <- settle window (holds (tabId tab) (Ref 2 0) "4")
     -- Take the three of them, the way Shift and an arrow key does.
@@ -411,9 +410,9 @@ tests window root = do
   -- a main loop that is not running.  What is checked is that asking for one
   -- leaves the workbook alone.
   before <- stateOf window
-  forM_ [ Act NewWorkbook, Act CopyTo, Act OpenWorkbook, Act AddSheet
-        , Act RenameSheet, Act EditCell, Act Preferences, Act Shortcuts
-        , Act About, Act SaveNothing ] (happens window)
+  forM_ ([ Act NewWorkbook, Act CopyTo, Act OpenWorkbook, Act AddSheet
+         , Act RenameSheet, Act EditCell, Act Preferences, Act Shortcuts
+         , Act About, Act SaveNothing ] :: [Event]) (happens window)
   untouched <- stateOf window
   check window "asking for a dialog changes nothing by itself"
     (tabOrder before, statePage before) (tabOrder untouched, statePage untouched)
@@ -607,6 +606,14 @@ stateOf = readIORef . windowState
 -- The update only ever uses these inside the actions it hands back, and the
 -- actions that use them are the ones that put something on screen.  Nothing
 -- here asks for a window, so nothing here needs one.
+--
+-- The three drawing parts were `error' calls once, since nothing was ever
+-- going to look at them.  That holds only while Env's fields stay lazy, and
+-- an afternoon of StrictData being on for every module showed how sharp it
+-- is: the record is built in every one of these tests, and an `error' in a
+-- strict field goes off the moment it is.  They are real objects now.  A
+-- builder, a menu and a stylesheet are plain GObjects, and none of the three
+-- needs a display to exist.
 quietEnv :: Kernel -> (Event -> IO ()) -> IO Env
 quietEnv kernel poster = do
   windowRef <- newIORef Nothing
@@ -617,11 +624,14 @@ quietEnv kernel poster = do
   editor <- newIORef Nothing
   tags <- newIORef M.empty
   stall <- newIORef Nothing
+  builder <- Gtk.builderNew
+  recent <- Gio.menuNew
+  palette <- Gtk.cssProviderNew
   pure Env
     { envKernel = kernel
     , envPost = poster
     , envUiDirectory = "ui"
-    , envBuilder = error "the tests draw nothing, so there is no .ui file"
+    , envBuilder = builder
     , envWindow = windowRef
     , envToasts = toastsRef
     , envGestures = gestures
@@ -629,9 +639,9 @@ quietEnv kernel poster = do
     , envWritten = written
     , envCellEdit = cellEdit
     , envEditor = editor
-    , envRecentSection = error "the tests draw nothing, so there is no menu"
+    , envRecentSection = recent
     , envStallDialog = stall
-    , envPalette = error "the tests draw nothing, so there is no stylesheet"
+    , envPalette = palette
     }
 
 --
