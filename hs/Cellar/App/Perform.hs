@@ -28,6 +28,7 @@ import qualified GI.GLib as GLib
 
 import Cellar.App.Effect
 import Cellar.App.Env
+import Cellar.Grid.Gestures (focusGrid)
 import Cellar.App.Event
 import Cellar.App.State (TabId)
 import Cellar.Client (markReady, restartKernel)
@@ -65,7 +66,7 @@ perform env = \case
   -- The grid takes the keyboard when a workbook opens.  There is no way to
   -- say in markup that a widget wants the focus, so this is a gap in the
   -- declarative layer rather than a thing Cellar wants to do by hand.
-  FocusGrid -> pure Nothing
+  FocusGrid tab -> nothing (focusGrid =<< gesturesFor env tab)
   FillRecent paths -> nothing (fillRecentMenu env paths)
 
   --

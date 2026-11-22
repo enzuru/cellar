@@ -15,6 +15,7 @@ module Cellar.Grid.Gestures
   , GridGesture (..)
   , newGestures
   , gestureHandlers
+  , focusGrid
   , gestureDragShown
   ) where
 
@@ -145,6 +146,16 @@ cellUnder widget' x y = do
   case picked of
     Nothing -> pure Nothing
     Just found -> refOf found
+
+-- | Put the keyboard on this sheet's grid.
+--
+-- The view is what the key handler is on, so focusing it is enough, and it
+-- is here rather than in the effect because 'Gestures' is what remembers
+-- which widget a sheet's grid is.
+focusGrid :: Gestures -> IO ()
+focusGrid gestures = do
+  view <- readIORef (gestureView gestures)
+  mapM_ (void . Gtk.widgetGrabFocus) view
 
 takeColumnView :: Gestures -> Gtk.ColumnView -> IO ()
 takeColumnView gestures view = do

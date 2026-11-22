@@ -127,7 +127,7 @@ update state = \case
     let chosen = selectTab tab state
     in Step chosen (map Now
          ([ effect | not (stateLoading chosen), effect <- writeWorkbook chosen ]
-          ++ [FocusGrid]))
+          ++ [FocusGrid tab]))
 
   TabsReordered order ->
     let ordered = orderTabs order state
@@ -255,7 +255,7 @@ update state = \case
                         | (t, sheet) <- zip (NE.toList tabs) (map snd sheets) ]
               , Watch open ]
            ++ [ Emit (Remembered (workbookRoot open)) | how == AsUsual ]
-           ++ [ FocusGrid ]))
+           ++ [ FocusGrid t | Just t <- [openCurrent <$> stateOpen loaded] ]))
 
   SheetsRead sheets showing -> case stateWorkbook state of
     Nothing -> stay state

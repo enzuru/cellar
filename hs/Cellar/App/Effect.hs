@@ -56,7 +56,13 @@ data Effect
   | ShowDrag TabId (Maybe (Axis, Int, Int))
     -- ^ Draw the line being dragged, which is classes on widgets: which axis
     -- it is on, where it started and where it would land.
-  | FocusGrid
+  | FocusGrid TabId
+    -- ^ Put the keyboard on this sheet's grid.
+    --
+    -- A sheet nobody is looking at is drawn with no rows, so the cell that
+    -- had the keyboard is gone by the time another tab comes forward and
+    -- there is nothing focused to answer Return with.  The grid itself is
+    -- what the key handler is on, so focusing the view is enough.
   | FillRecent [FilePath]
     -- ^ Rebuild the submenu of workbooks opened lately.
 

@@ -245,21 +245,42 @@ sheets env state = tabView
   , #name := "sheet-tabs"
   ]
   defaultTabViewParams
-    { tabs = V.fromList (map (sheet env) (stateTabs state))
-    , selected = keyOf . openCurrent <$> stateOpen state
+    { tabs = V.fromList (map (sheet env showing) (stateTabs state))
+    , selected = keyOf <$> showing
     , onSelected = Just (TabSelected . readKey)
     , onReordered = Just (TabsReordered . map readKey . V.toList)
     , onClosePage = Just (TabCloseAsked . readKey)
     , closeAnswer = stateCloseAnswer state
     }
+  where
+    showing = openCurrent <$> stateOpen state
 
-sheet :: ViewEnv -> Tab -> TV.Tab Event
-sheet env tab = TV.Tab
+-- | One tab, with rows in it only if it is the tab on screen.
+--
+-- A workbook of twenty-four sheets used to build twenty-four whole grids on
+-- every patch, since this is a function of the whole state and every tab is
+-- in it.  A grid is as big as its sheet says it is, a hundred rows by
+-- twenty-six, so one patch made sixty-two thousand cells in order to show two
+-- thousand six hundred of them.  Opening a real workbook of that shape
+-- allocated twenty-five gigabytes and spent four seconds in five collecting
+-- the garbage.
+--
+-- So a tab nobody is looking at is drawn with no rows.  It is the same markup
+-- either way, deliberately: a tab whose child changed shape would be a page
+-- the library has to close and build again, taking its columns and every cell
+-- widget under them with it, and that is a cost on every tab you click
+-- rather than a cost on the sheets you are not looking at.  Same shape, and
+-- patching it is a property change over an empty row list.
+sheet :: ViewEnv -> Maybe TabId -> Tab -> TV.Tab Event
+sheet env showing tab = TV.Tab
   { TV.tabKey = keyOf (tabId tab)
   , TV.tabTitle = T.pack (tabName tab)
-  , TV.tabChild = GridSaid (tabId tab) <$> gridView (viewGridHandlers env (tabId tab))
-                                                    (tabGrid tab)
+  , TV.tabChild = GridSaid (tabId tab) <$> gridView (viewGridHandlers env (tabId tab)) model
   }
+  where
+    model
+      | showing == Just (tabId tab) = tabGrid tab
+      | otherwise = (tabGrid tab) { modelRows = 0 }
 
 keyOf :: TabId -> Text
 keyOf = T.pack . show
