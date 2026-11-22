@@ -269,8 +269,17 @@ sheets env state = tabView
 -- either way, deliberately: a tab whose child changed shape would be a page
 -- the library has to close and build again, taking its columns and every cell
 -- widget under them with it, and that is a cost on every tab you click
--- rather than a cost on the sheets you are not looking at.  Same shape, and
--- patching it is a property change over an empty row list.
+-- rather than a cost on the sheets you are not looking at.
+--
+-- The library stopped patching pages nobody is looking at after this was
+-- written, which sounded like it made this unnecessary and does not.  What
+-- is left is not patching but building: a page's widgets are made when the
+-- page is made, and a ColumnView over a hundred rows has GTK bind every cell
+-- it could show, some eight hundred of them, for a sheet nobody has opened.
+-- Twenty-three of those is what costs the two gigabytes.  A page with no rows
+-- has no cells to bind, and that is now the whole of what this buys.
+-- Measured either way on a real workbook: 2,590 ms and 232 MB against
+-- 32,210 ms and 1,821 MB.
 sheet :: ViewEnv -> Maybe TabId -> Tab -> TV.Tab Event
 sheet env showing tab = TV.Tab
   { TV.tabKey = keyOf (tabId tab)
