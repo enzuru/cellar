@@ -292,6 +292,10 @@ installActions env application = do
   define "preferences" ["<Control>comma"] Preferences
   define "shortcuts" ["<Control>question"] Shortcuts
   define "about" [] About
+  -- Letters are safe under Shift.  It was punctuation that parsed and then
+  -- never fired, because the keyval under Shift is a different one.
+  define "undo" ["<Control>z"] Undo
+  define "redo" ["<Control><Shift>z", "<Control>y"] Redo
   define "quit" ["<Control>q"] Quit
 
   -- A row on the start page and an item in the Open Recent submenu both fire

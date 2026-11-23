@@ -213,6 +213,47 @@ tests window root = do
     again <- settle window (holds (tabId tab) (Ref 1 0) "")
     check window "recalculating leaves the sheet saying the same thing" True again
 
+  section "going back"
+  back <- stateOf window
+  forM_ (currentTab back) $ \tab -> do
+    happens window (CellEdited (tabId tab) (Ref 6 0) "\"before\"")
+    _ <- settle window (holds (tabId tab) (Ref 6 0) "before")
+    happens window (CellEdited (tabId tab) (Ref 6 0) "\"after\"")
+    _ <- settle window (holds (tabId tab) (Ref 6 0) "after")
+    _ <- quiet window
+
+    happens window (Act Undo)
+    undone <- settle window $ \s -> case currentTab s of
+      Nothing -> False
+      Just now -> displayAt (modelView (tabGrid now)) (Ref 6 0) == "before"
+    check window "undo puts the cell back as it was" True undone
+    _ <- quiet window
+    onDisk <- cellOnDisk sales "Summary" "A7"
+    check window "and the file says so too" (Just "\"before\"") onDisk
+
+    happens window (Act Redo)
+    redone <- settle window $ \s -> case currentTab s of
+      Nothing -> False
+      Just now -> displayAt (modelView (tabGrid now)) (Ref 6 0) == "after"
+    check window "redo brings the change back" True redone
+    _ <- quiet window
+
+    -- A change after an undo is the end of that branch.
+    happens window (Act Undo)
+    _ <- settle window $ \s -> case currentTab s of
+      Nothing -> False
+      Just now -> displayAt (modelView (tabGrid now)) (Ref 6 0) == "before"
+    _ <- quiet window
+    afterUndo <- stateOf window
+    forM_ (currentTab afterUndo) $ \now ->
+      happens window (CellEdited (tabId now) (Ref 6 0) "\"a third thing\"")
+    _ <- settle window $ \s -> case currentTab s of
+      Nothing -> False
+      Just now -> displayAt (modelView (tabGrid now)) (Ref 6 0) == "a third thing"
+    branched <- stateOf window
+    check window "a change after an undo clears what there was to redo"
+      [] (stateRedo branched)
+
   section "a formula about a block"
   summing <- stateOf window
   forM_ (currentTab summing) $ \tab -> do

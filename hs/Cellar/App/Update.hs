@@ -83,7 +83,9 @@ update state = \case
     Just found ->
       let (model, outs) = gridEvent event (tabGrid found)
           moved = withTab tab (\t -> t { tabGrid = model }) state
-      in Step moved (concatMap (carrying moved tab) outs)
+          kept | any changesTheSheet outs = remembering state moved
+               | otherwise = moved
+      in Step kept (concatMap (carrying kept tab) outs)
 
   BlockGrown tab r -> stay $ withTab tab
     (\t -> t { tabGrid = fromMaybe (tabGrid t) (stretchTo r (tabGrid t)) })
@@ -151,7 +153,7 @@ update state = \case
   -- The sheets that are left may have been naming it, so the kernel says what
   -- they come to now that they cannot.
   SheetDeleted tab name ->
-    let without = forgetTab tab (keeping tab state)
+    let without = remembering state (forgetTab tab (keeping tab state))
     in Step without (map Now
          (  writeWorkbook without
          ++ [ Request [(Op.Close name, Closed)]
@@ -291,7 +293,7 @@ update state = \case
     | otherwise ->
         let name = uniqueSheetName (tabOrder state) wanted
             (counted, tab) = freshTab name (emptyView defaultRows defaultColumns) state
-            grown = addTab tab counted
+            grown = remembering state (addTab tab counted)
         in Step grown (map Now
              (  writeWorkbook grown
              ++ [ Request [(opening name emptySheet, Opened (tabId tab) True)]
@@ -310,7 +312,8 @@ update state = \case
           after state (Notify (T.pack ("This workbook already has a sheet called "
                                        ++ wanted)))
       | otherwise ->
-          let renamed = withTab tab (\t -> t { tabName = wanted }) state
+          let renamed = remembering state
+                          (withTab tab (\t -> t { tabName = wanted }) state)
           in Step renamed (map Now
                (  writeWorkbook renamed
                ++ [ Request [(Op.Rename (tabName found) wanted, Snapshot tab Nothing)] ]))
@@ -321,7 +324,7 @@ update state = \case
 
   CellEdited tab r text -> case tabById tab state of
     Nothing -> stay state
-    Just found -> after state $
+    Just found -> after (remembering state state) $
       Request [(Op.SetCell (tabName found) (refName r) text, CellSet tab (refName r))]
 
   EditorCommandSet command ->
@@ -456,6 +459,44 @@ writeIfRewritten state payload =
 writeWorkbook :: State -> [Effect]
 writeWorkbook state =
   [ SaveWorkbook open (bookOf state) | open <- maybeToList (stateWorkbook state) ]
+
+-- | Put this workbook back, on disk and on screen.
+--
+-- Opening it again is the whole of it.  That path builds the tabs, tells the
+-- kernel every sheet and draws the result, and it is the one the window uses
+-- for an ordinary open, so there is no second way of loading a workbook to
+-- keep right.  The file is written from here rather than left to the reload,
+-- so that the disk and the screen agree at every moment.
+goBackTo :: Workbook -> Book -> State -> Step
+goBackTo open book next = Step next
+  [ Now (SaveWorkbook open book)
+  , Now (Emit (WorkbookRead open AsBefore (bookSheets book) (bookActive book)))
+  ]
+
+-- | Remember what the workbook was, so that Ctrl+Z can go back to it.
+--
+-- Called by the handler that starts a change rather than the one that hears
+-- the answer: by the time the kernel has answered, the workbook is already
+-- the new one and what is worth keeping is gone.
+remembering :: State -> State -> State
+remembering before next = next
+  { stateUndo = take undoDepth (bookOf before : stateUndo before)
+  , stateRedo = []
+  }
+
+-- | Which of the grid's requests change what the workbook says.
+--
+-- A column's width and the selection do not, though the width is written to
+-- the file: the line is content rather than what is saved, because somebody
+-- who drags a column wider and presses Ctrl+Z means the edit before it.
+changesTheSheet :: GridOut -> Bool
+changesTheSheet = \case
+  Ask (Clear _) -> True
+  Ask (Move _ _ _) -> True
+  Ask (Insert _ _) -> True
+  Ask (Delete _ _) -> True
+  Ask Layout -> False
+  Edit _ -> False
 
 -- | The workbook as the file should hold it.
 bookOf :: State -> Book
@@ -614,7 +655,7 @@ acting state = \case
   Formula aggregate -> onSheet $ withSheet $ \tab ->
     case formulaPlaces (tabGrid tab) of
       [] -> after state (Notify "There is no room for that below the block")
-      places -> Step state
+      places -> Step (remembering state state)
         [ Now (Request [ ( Op.SetCell (tabName tab) (refName at) (formulaFor aggregate block)
                          , CellSet (tabId tab) (refName at) )
                        | (at, block) <- places ]) ]
@@ -626,6 +667,22 @@ acting state = \case
     in Step state { stateRecent = [], stateConfig = updated }
          (map Now [ SaveConfig updated, FillRecent []
                   , Notify "Cleared the recent workbooks" ])
+
+  -- Going back is opening the workbook that was, which is a path the window
+  -- already has and already tests.  The file is written from here rather than
+  -- left to the reload, so that what is on disk and what is on screen are the
+  -- same thing at every moment.
+  Undo -> case (stateUndo state, stateWorkbook state) of
+    (previous : rest, Just open) -> goBackTo open previous state
+      { stateUndo = rest
+      , stateRedo = take undoDepth (bookOf state : stateRedo state) }
+    _ -> after state (Notify "There is nothing to undo")
+
+  Redo -> case (stateRedo state, stateWorkbook state) of
+    (next : rest, Just open) -> goBackTo open next state
+      { stateRedo = rest
+      , stateUndo = take undoDepth (bookOf state : stateUndo state) }
+    _ -> after state (Notify "There is nothing to redo")
 
   Quit -> Stop
 

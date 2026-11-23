@@ -49,6 +49,9 @@ data Action
   | Preferences
   | Shortcuts
   | About
+  | Undo
+    -- ^ Put the workbook back as it stood before the last change.
+  | Redo
   | Quit
   deriving (Eq, Show)
 

@@ -20,6 +20,7 @@
 module Cellar.App.State
   ( -- * The state
     State (..)
+  , undoDepth
   , Page (..)
   , Open (..)
   , Tab (..)
@@ -167,7 +168,23 @@ data State = State
     -- tab, and whether it goes.  A command rather than a fact, so the tab view
     -- acts on it once and it is put back to nothing.
   , stateCloseAnswer :: Maybe (Text, Bool)
+    -- | The workbook as it stood before each of the last few changes, newest
+    -- first, and the ones taken back off it.
+    --
+    -- A whole workbook rather than the inverse of an operation, because the
+    -- inverses are not what they look like: deleting a column rewrites the
+    -- references in every sheet that named it, the kernel does that rewriting
+    -- and the window never sees it, so the inverse of that delete is not an
+    -- insert.  A workbook is thirty-five kilobytes and 'bookOf' already
+    -- builds one.
+  , stateUndo :: [Book]
+  , stateRedo :: [Book]
   }
+
+-- | How far back Ctrl+Z goes.  A hundred of this workbook is three and a half
+-- megabytes against the two hundred and forty the window already holds.
+undoDepth :: Int
+undoDepth = 100
 
 newState :: Config -> FilePath -> State
 newState config home = State
@@ -186,6 +203,8 @@ newState config home = State
   , statePalette = M.empty
   , stateFresh = False
   , stateCloseAnswer = Nothing
+  , stateUndo = []
+  , stateRedo = []
   }
 
 --
