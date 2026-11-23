@@ -29,7 +29,7 @@ import GI.Gtk.Declarative
 import GI.Gtk.Declarative.Container.Stack (StackChild (..), StackChildProperties (..), defaultStackChildProperties)
 import GI.Gtk.Declarative.Adwaita.Bin ()
 import GI.Gtk.Declarative.Adwaita.HeaderBar
-import GI.Gtk.Declarative.Adwaita.References (tabBarView)
+import GI.Gtk.Declarative.Adwaita.References (tabBarView, tabOverviewView)
 import GI.Gtk.Declarative.Adwaita.Slots (titleWidget)
 import qualified GI.Gtk.Declarative.Adwaita.TabView as TV
 import GI.Gtk.Declarative.Adwaita.TabView (tabView, defaultTabViewParams, TabViewParams (..))
@@ -62,6 +62,14 @@ windowView env state = bin Adw.ApplicationWindow
   , on #closeRequest (False, WindowClosing)
   , afterCreated (viewTookWindow env)
   ]
+  -- A workbook can have two dozen sheets, which is more than a tab bar can
+  -- show at a readable width.  The overview is libadwaita's answer: a grid of
+  -- the pages, with a search box, over the whole window.  It wraps everything
+  -- because that is what it covers.
+  $ bin Adw.TabOverview
+      [ tabOverviewView "sheet-tabs"
+      , #enableSearch := True
+      ]
   $ container Adw.ToolbarView []
       [ toolbarTop (headerBar env state)
       , toolbarTop (tabBar state)
@@ -80,7 +88,13 @@ headerBar env state = container Adw.HeaderBar
   [ titleWidget $ widget Adw.WindowTitle
       [#title := "Cellar", #subtitle := subtitleOf state]
   ]
-  [ headerBarStart $ widget Gtk.Button
+  [ headerBarStart $ widget Adw.TabButton
+      [ #tooltipText := "Show every sheet"
+      , #visible := sheetShowing state
+      , #actionName := "overview.open"
+      , tabButtonView "sheet-tabs"
+      ]
+  , headerBarStart $ widget Gtk.Button
       [ #iconName := "view-refresh-symbolic"
       , #tooltipText := "Recalculate the sheet"
       , #visible := sheetShowing state
@@ -93,6 +107,20 @@ headerBar env state = container Adw.HeaderBar
       , #primary := True
       ]
   ]
+
+-- | The tab view an @AdwTabButton@ counts the pages of.
+--
+-- The library has one of these for the bar and one for the overview and not
+-- one for the button, which needs the same thing: the view is another widget
+-- and markup cannot hand over a widget, so it is named and looked up on the
+-- next turn of the loop.
+tabButtonView
+  :: (Adw.IsTabButton widget, Gtk.IsWidget widget)
+  => Text
+  -> Attribute widget event
+tabButtonView = reference $ \button target -> case target of
+  Nothing -> pure ()
+  Just found -> Adw.tabButtonSetView button =<< Gtk.castTo Adw.TabView found
 
 -- | The tabs.  The bar is drawn here and the tabs in it are the pages of the
 -- view below, which is the one widget that holds both.
