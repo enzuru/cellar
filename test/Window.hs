@@ -451,9 +451,9 @@ tests window root = do
   -- a main loop that is not running.  What is checked is that asking for one
   -- leaves the workbook alone.
   before <- stateOf window
-  forM_ ([ Act NewWorkbook, Act CopyTo, Act OpenWorkbook, Act AddSheet
+  forM_ ([ Act NewWorkbook, Act SaveAs, Act OpenWorkbook, Act AddSheet
          , Act RenameSheet, Act EditCell, Act Preferences, Act Shortcuts
-         , Act About, Act SaveNothing ] :: [Event]) (happens window)
+         , Act About ] :: [Event]) (happens window)
   untouched <- stateOf window
   check window "asking for a dialog changes nothing by itself"
     (tabOrder before, statePage before) (tabOrder untouched, statePage untouched)
@@ -471,6 +471,27 @@ tests window root = do
   sized <- bookOnDisk (root </> "made.cellar")
   check window "and its sheet is written out at the size on screen"
     (Just 100) (sheetRows . snd <$> listToMaybe (bookSheets sized))
+
+  section "saving"
+  -- Every change is written as it is made, so what Ctrl+S has to prove is
+  -- that it writes rather than that it is the only thing that does. The file
+  -- is taken away behind the window's back, and saving puts it back.
+  removeFile (root </> "made.cellar")
+  happens window (Act Save)
+  restored <- sheetsOnDisk (root </> "made.cellar")
+  check window "saving writes the workbook out" ["Sheet 1"] restored
+
+  section "saving somewhere else"
+  happens window (WorkbookMade (root </> "elsewhere.cellar") True)
+  moved <- settle window $ \s ->
+    (workbookName <$> stateWorkbook s) == Just "elsewhere.cellar"
+  check window "saving as opens the workbook in its new file" True moved
+  carried <- sheetsOnDisk (root </> "elsewhere.cellar")
+  check window "which holds the sheets that were on screen" ["Sheet 1"] carried
+  stayed <- doesFileExist (root </> "made.cellar")
+  check window "and leaves the file it came from where it was" True stayed
+
+  section "a workbook to think in"
   happens window (Act NewScratch)
   scratch <- settle window (\s -> stateScratch s && isJust (stateWorkbook s))
   check window "a scratch workbook opens, and says it is one" True scratch

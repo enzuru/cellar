@@ -362,48 +362,52 @@ tell the two apart on sight.
 |Ctrl+W                             |Delete the sheet showing  |
 |Ctrl+Page Up/Page Down             |Move to the sheet before/after|
 |Ctrl+N / Ctrl+Shift+N              |New workbook / New scratch workbook|
-|Ctrl+O                             |Open a workbook folder    |
-|Ctrl+Shift+S                       |Copy this workbook elsewhere|
+|Ctrl+O                             |Open a workbook           |
+|Ctrl+S                             |Write the workbook out now|
+|Ctrl+Shift+S                       |Save the workbook elsewhere|
+|Ctrl+Z / Ctrl+Shift+Z              |Undo / Redo               |
 |Ctrl+,                             |Preferences               |
 |Ctrl+Q                             |Quit                      |
 
-## Saving, which there is none of
+## Saving
 
-There is no Save. A cell is written to its own file the moment you apply the
-edit, so the folder on disk *is* the sheet rather than a copy of it taken when
-you last remembered to ask. Clearing a cell deletes its file; moving a row
-renames the files it moved; dragging a column wider records the width. Ctrl+S
-is bound only to say so.
+Cellar writes the workbook as you change it. A cell you edit, a row you move
+and a column you drag wider all reach the file at once. The file on disk is
+the workbook rather than a copy of it from the last time you remembered to
+ask.
 
-That falls out of the format. A sheet was already a folder of one file per
-cell, and a cell already held nothing but its source text, so there was never
-much reason for an edit to sit in memory waiting to be flushed — least of all
-when the whole point of the layout is that `git diff` should tell you what
-changed.
+That falls out of the format. A workbook is one text file, and it holds every
+sheet and every cell of each. A cell holds nothing but its source text, so an
+edit has no reason to sit in memory and wait. The point of the layout is that
+`git diff` tells you what changed.
 
-The shell owns the sources and the kernel owns what they come to. An edit is
-sent to the kernel, and the file is written when the kernel says what it kept —
-so what lands on disk is what the sheet actually holds rather than the shell's
-guess at it.
+**Save** (Ctrl+S) writes the workbook out now. One thing really does wait. A
+column dragged wider reports its width many times a second, so that write
+holds back a moment in case another report is coming. Ctrl+S is how you say
+now instead of in a moment.
 
-The traffic goes the other way too. Cellar watches the whole workbook — every
-sheet's cells, every sheet's primary file, and the folder they sit in — and
-anything that changes a cell's file changes the cell: your editor, a
-`git checkout`, a script, another copy of Cellar. The grid reloads and the
-sheet recomputes, and a toast says why the numbers moved. A `git checkout` that
-brings a sheet in or takes one away rebuilds the tabs.
+**Save As…** (Ctrl+Shift+S) writes the workbook to another file and carries
+you on editing it there. The file you came from stays as it was. A **scratch
+workbook** (Ctrl+Shift+N) is an ordinary workbook in a folder Cellar picks,
+under `~/.local/share/cellar/scratch/`, so that starting one asks you nothing.
+Save As is how a scratch workbook becomes one you keep.
 
-The one thing worth knowing is that this makes an edit immediate and permanent
-in the same breath. There is no undo, and never was. A workbook is one text
-file, so putting it under version control is the honest way to get one, and
-that is yours to set up rather than Cellar's.
+The shell owns the sources and the kernel owns what they come to. An edit goes
+to the kernel, and the file is written when the kernel says what it kept. What
+lands on disk is what the sheet holds rather than the shell's guess at it.
 
-**Copy To…** (Ctrl+Shift+S) is what is left of Save As: it writes the workbook
-to a new file and carries you on editing there, leaving the one you came from as
-it stands. A **scratch workbook** (Ctrl+Shift+N) is an ordinary workbook in a
-folder Cellar picks, under
-`~/.local/share/cellar/scratch/`, so that starting one asks you nothing; Copy To
-is how it becomes a workbook you keep.
+The traffic goes the other way too. Cellar watches the workbook file, and
+anything that writes to it changes the workbook: your editor, a `git checkout`,
+a script, another copy of Cellar. The grid reloads, the sheet recomputes, and a
+toast says why the numbers moved. A checkout that brings a sheet in or takes
+one away rebuilds the tabs.
+
+Ctrl+Z goes back a step and Ctrl+Shift+Z comes forward again. A step is the
+whole workbook as it stood before a change. Cellar keeps the last hundred of
+them, for as long as the window is open. They are not written to the file,
+so closing the window ends them. A workbook is one text file. Version control
+is still the honest way to keep a history you can trust, and that is yours to
+set up rather than Cellar's.
 
 ## Using your own editor
 

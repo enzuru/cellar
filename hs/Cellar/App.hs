@@ -262,8 +262,8 @@ installActions env application = do
   define "new" ["<Control>n"] NewWorkbook
   define "new-scratch" ["<Control><Shift>n"] NewScratch
   define "open" ["<Control>o"] OpenWorkbook
-  define "save" ["<Control>s"] SaveNothing
-  define "copy-to" ["<Control><Shift>s"] CopyTo
+  define "save" ["<Control>s"] Save
+  define "save-as" ["<Control><Shift>s"] SaveAs
   define "add-sheet" ["<Control>t"] AddSheet
   define "rename-sheet" ["<Control><Shift>r"] RenameSheet
   define "delete-sheet" ["<Control>w"] DeleteSheet

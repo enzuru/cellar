@@ -27,8 +27,11 @@ data Action
   = NewWorkbook
   | NewScratch
   | OpenWorkbook
-  | SaveNothing
-  | CopyTo
+    -- | Write the workbook out now, rather than waiting for the next change
+    -- to do it.
+  | Save
+    -- | Write the workbook somewhere else, and carry on editing it there.
+  | SaveAs
   | AddSheet
   | RenameSheet
   | DeleteSheet
@@ -156,7 +159,8 @@ data Event
   | EditorCommandSet String
   | WorkbookMade FilePath Bool
     -- ^ A path for a new workbook, and whether to copy this one into it.
-  | FolderChosen FilePath
+  | WorkbookChosen FilePath
+    -- ^ A file dialog named a workbook to open.
   | CellEdited TabId Ref String
     -- | These folders are being watched for changes made behind our back.
     -- The window holds the list because what is watched is a fact about the

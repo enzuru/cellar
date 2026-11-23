@@ -25,8 +25,9 @@ module Cellar.App.Env
   , showDrag
   , askSheetName
   , askNewWorkbook
+  , askSaveAs
   , askToDelete
-  , chooseFolder
+  , chooseWorkbook
   , openPreferences
   , showAbout
   , showShortcuts
@@ -50,6 +51,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import System.Directory (doesFileExist)
 import System.FilePath ((</>), takeFileName)
 
 import Data.GI.Base
@@ -269,20 +271,17 @@ askSheetName env tab suggestion heading = onMain $ do
   where isRename = maybe False (const True) tab
 
 -- | Ask where a new workbook goes, and what it is called.
-askNewWorkbook :: Env -> String -> FilePath -> Bool -> IO ()
-askNewWorkbook env suggestion location copying = onMain $ do
+askNewWorkbook :: Env -> String -> FilePath -> IO ()
+askNewWorkbook env suggestion location = onMain $ do
   dialog <- object (envBuilder env) "new_sheet_dialog" Adw.AlertDialog
   nameEntry <- object (envBuilder env) "new_sheet_name" Gtk.Entry
   locationButton <- object (envBuilder env) "new_sheet_location" Gtk.Button
   locationLabel <- object (envBuilder env) "new_sheet_location_label" Gtk.Label
   set dialog
-    [ #heading := if copying then "Copy Workbook To" else "New Workbook"
-    , #body := if copying
-        then "The workbook is written to a new folder, and that is the one you \
-             \carry on editing. The folder you were in is left as it stands."
-        else "A workbook is one file, holding every sheet and every cell of \
-             \each." ]
-  Adw.alertDialogSetResponseLabel dialog "create" (if copying then "Copy" else "Create")
+    [ #heading := "New Workbook"
+    , #body := "A workbook is one file, holding every sheet and every cell of \
+               \each." ]
+  Adw.alertDialogSetResponseLabel dialog "create" "Create"
   Gtk.editableSetText nameEntry (T.pack suggestion)
   Gtk.labelSetLabel locationLabel (T.pack location)
   -- The folder button answers into the label, which is where the answer is
@@ -296,7 +295,76 @@ askNewWorkbook env suggestion location copying = onMain $ do
       -- A workbook is a file whose name ends in .cellar, which is what the
       -- desktop and the shell both go by.
       let name = if null typed then "workbook" else typed
-      post env (WorkbookMade (chosen </> workbookFileName name) copying)
+      post env (WorkbookMade (chosen </> workbookFileName name) False)
+
+-- | Ask where to save the workbook, and say to write it there.
+--
+-- A save dialog rather than the new workbook's name and folder. Saving as
+-- can mean a file that is already there, and the save dialog is the one that
+-- asks before it is written over.
+askSaveAs :: Env -> String -> FilePath -> IO ()
+askSaveAs env suggestion location = onMain $ do
+  window <- readIORef (envWindow env)
+  folder <- Gio.fileNewForPath location
+  dialog <- new Gtk.FileDialog
+    [ #title := "Save Workbook As"
+    , #acceptLabel := "Save"
+    , #initialName := T.pack (workbookFileName suggestion)
+    , #initialFolder := folder ]
+  Gtk.fileDialogSetFilters dialog . Just =<< workbookFilters
+  Gtk.fileDialogSave dialog window (Nothing :: Maybe Gio.Cancellable) $ Just $
+    \_ result -> do
+      -- Cancelling raises, which is the one outcome we expect and ignore.
+      outcome <- try (Gtk.fileDialogSaveFinish dialog result)
+      case outcome :: Either SomeException Gio.File of
+        Left _ -> pure ()
+        Right file -> do
+          path <- Gio.fileGetPath file
+          forM_ path $ \chosen -> do
+            -- Somebody who types a name with no ending means a workbook, and
+            -- only a name ending in .cellar is one.
+            let target = workbookFileName chosen
+            -- The dialog asks before it writes over a file, and the file it
+            -- asks about is the name it was given.  Adding the ending can
+            -- land on another file altogether, and writing over that one is
+            -- not something anybody agreed to.
+            taken <- if target == chosen then pure False else doesFileExist target
+            if taken
+              then notify env
+                     (T.pack (takeFileName target ++ " is already there"))
+              else post env (WorkbookMade target True)
+
+-- | Ask which workbook to open.
+--
+-- A workbook is one file, so this is a file dialog that shows the workbooks
+-- and nothing else.
+chooseWorkbook :: Env -> IO ()
+chooseWorkbook env = onMain $ do
+  window <- readIORef (envWindow env)
+  dialog <- new Gtk.FileDialog [#title := "Open Workbook"]
+  Gtk.fileDialogSetFilters dialog . Just =<< workbookFilters
+  Gtk.fileDialogOpen dialog window (Nothing :: Maybe Gio.Cancellable) $ Just $
+    \_ result -> do
+      outcome <- try (Gtk.fileDialogOpenFinish dialog result)
+      case outcome :: Either SomeException Gio.File of
+        Left _ -> pure ()
+        Right file -> do
+          path <- Gio.fileGetPath file
+          forM_ path (post env . WorkbookChosen)
+
+-- | What a workbook looks like to a file dialog.
+--
+-- A list of one rather than a default filter on its own.  A dialog applies
+-- its default filter by naming one of the filters it was given, so a filter
+-- that is not in that list is a filter the dialog complains about and then
+-- ignores.
+workbookFilters :: IO Gio.ListStore
+workbookFilters = do
+  only <- new Gtk.FileFilter [#name := "Cellar Workbooks"]
+  Gtk.fileFilterAddSuffix only "cellar"
+  filters <- Gio.listStoreNew =<< glibType @Gtk.FileFilter
+  Gio.listStoreAppend filters only
+  pure filters
 
 -- | A tab's close button, or Delete Sheet.  A tab is a sheet of the workbook
 -- rather than a view of one, so closing it is deleting it.
@@ -307,10 +375,6 @@ askToDelete env tab name = onMain $ do
                                 \deleted from the workbook folder.") ]
   choose env dialog $ \response ->
     post env (if response == "delete" then SheetDeleted tab name else TabKept tab)
-
--- | Ask for a folder, and post it.
-chooseFolder :: Env -> IO ()
-chooseFolder env = chooseFolderWith env (post env . FolderChosen)
 
 chooseFolderWith :: Env -> (FilePath -> IO ()) -> IO ()
 chooseFolderWith env continue = onMain $ do
@@ -416,8 +480,10 @@ shortcuts =
   , ("Ctrl+Page Up / Page Down", "Move to the sheet before or after this one")
   , ("Drag a tab", "Reorder the sheets")
   , ("Ctrl+N / Ctrl+Shift+N", "New workbook / New scratch workbook")
-  , ("Ctrl+O", "Open a workbook folder")
-  , ("Ctrl+Shift+S", "Copy this workbook to another folder")
+  , ("Ctrl+O", "Open a workbook")
+  , ("Ctrl+S", "Write the workbook out now")
+  , ("Ctrl+Shift+S", "Save the workbook somewhere else, and edit it there")
+  , ("Ctrl+Z / Ctrl+Shift+Z", "Undo / Redo")
   , ("Ctrl+,", "Preferences")
   , ("Ctrl+Q", "Quit")
   ]

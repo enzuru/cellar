@@ -75,10 +75,11 @@ perform env = \case
 
   AskSheetName tab suggestion heading ->
     nothing (askSheetName env tab suggestion heading)
-  AskNewWorkbook suggestion location copying ->
-    nothing (askNewWorkbook env suggestion location copying)
+  AskNewWorkbook suggestion location ->
+    nothing (askNewWorkbook env suggestion location)
+  AskSaveAs suggestion location -> nothing (askSaveAs env suggestion location)
   AskToDeleteSheet tab name -> nothing (askToDelete env tab name)
-  ChooseFolder -> nothing (chooseFolder env)
+  ChooseWorkbook -> nothing (chooseWorkbook env)
   OpenPreferences config -> nothing (openPreferences env config)
   ShowShortcuts -> nothing (showShortcuts env)
   ShowAbout -> nothing (showAbout env)

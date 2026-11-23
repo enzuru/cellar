@@ -71,10 +71,17 @@ data Effect
   --
   | AskSheetName (Maybe TabId) String String
     -- ^ Which tab (none for a new sheet), the name to start from, the title.
-  | AskNewWorkbook String FilePath Bool
-    -- ^ The name to suggest, where to put it, and whether this is a copy.
+  | AskNewWorkbook String FilePath
+    -- ^ The name to suggest, and where to put it.
+  | AskSaveAs String FilePath
+    -- ^ Where to write the workbook: the name to suggest, and the folder to
+    -- start in.  A save dialog rather than the new workbook's name and
+    -- folder, because somebody saving as can mean a file that is already
+    -- there, and a dialog that knows it is saving is the one that asks about
+    -- overwriting it.
   | AskToDeleteSheet TabId String
-  | ChooseFolder
+  | ChooseWorkbook
+    -- ^ Ask which workbook to open.
   | OpenPreferences Config
   | ShowShortcuts
   | ShowAbout

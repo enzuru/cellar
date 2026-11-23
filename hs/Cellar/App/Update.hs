@@ -26,7 +26,7 @@ import Data.Traversable (mapAccumL)
 import Data.Maybe (fromMaybe, isJust, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.FilePath (takeFileName)
+import System.FilePath (takeDirectory, takeFileName)
 
 
 import Cellar.App.Effect
@@ -278,7 +278,7 @@ update state = \case
   WorkbookMade path copying -> after state { stateFresh = True } $
     if copying then CopyWorkbook path (bookOf state) else MakeWorkbook path
 
-  FolderChosen path -> after state (Emit (Act (OpenRecentAt path)))
+  WorkbookChosen path -> after state (Emit (Act (OpenRecentAt path)))
 
   --
   -- Sheets
@@ -460,6 +460,15 @@ writeWorkbook :: State -> [Effect]
 writeWorkbook state =
   [ SaveWorkbook open (bookOf state) | open <- maybeToList (stateWorkbook state) ]
 
+-- | The folder a save dialog opens in: the one the workbook is already in,
+-- or the one new workbooks go to when there is none to go by.  A workbook
+-- Cellar made to think in is in a folder nobody means to save into, so that
+-- one goes by the default as well.
+saveLocation :: State -> FilePath
+saveLocation state = case (stateWorkbook state, stateScratch state) of
+  (Just open, False) -> takeDirectory (workbookRoot open)
+  _ -> stateLocation state
+
 -- | Put this workbook back, on disk and on screen.
 --
 -- Opening it again is the whole of it.  That path builds the tabs, tells the
@@ -589,17 +598,25 @@ setSource name source sources =
 
 acting :: State -> Action -> Step
 acting state = \case
-  NewWorkbook -> after state (AskNewWorkbook "workbook" (stateLocation state) False)
+  NewWorkbook -> after state (AskNewWorkbook "workbook" (stateLocation state))
 
   NewScratch -> after state MakeScratch
 
-  OpenWorkbook -> after state ChooseFolder
+  OpenWorkbook -> after state ChooseWorkbook
 
-  -- There is nothing to save: the workbook on disk is already this one.
-  -- Ctrl+S is too deep a reflex to leave doing nothing silently.
-  SaveNothing -> onSheet $ after state (Notify "Cellar saves each cell as you edit it")
+  -- Cellar writes the workbook out as each change is made, so this is not
+  -- what Ctrl+S is in a program that waits to be told.  It is still worth
+  -- having and it still does something: a column dragged wider reports its
+  -- width many times a second, so that write waits a moment in case another
+  -- report is coming, and Ctrl+S is the way to say now rather than in a
+  -- moment.
+  Save -> onSheet $ case stateWorkbook state of
+    Nothing -> stay state
+    Just open -> Step state
+      (map Now (writeWorkbook state
+                  ++ [Notify (T.pack ("Saved " ++ workbookName open))]))
 
-  CopyTo -> onSheet $ after state (AskNewWorkbook suggestion (stateLocation state) True)
+  SaveAs -> onSheet $ after state (AskSaveAs suggestion (saveLocation state))
 
   AddSheet -> onSheet $
     let taken = tabOrder state
