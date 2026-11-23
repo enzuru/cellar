@@ -194,11 +194,10 @@ kernelReplies env = forever $ do
 -- the watcher is the folders themselves.
 watching :: Env -> State -> [Sub Event]
 watching env state =
-  -- The watchdog runs for as long as the window does.  It could be gated on
-  -- the kernel owing an answer, but the cell editor asks for previews of its
-  -- own that never pass through the update, so the state cannot see all of
-  -- what is outstanding, and a safety net with a hole in it is worse than one
-  -- that costs two wakeups a second.
+  -- The watchdog runs for as long as the window does.  Gating it on the state
+  -- would put a hole in it, because the cell editor asks for previews of its
+  -- own that never pass through the update.  It gates itself on the kernel
+  -- instead, which sees those too.
   sub "kernel-watchdog" (watchdog env)
     : [ sub (watchKey paths) (watchingFolders paths)
       | let paths = stateWatching state, not (null paths) ]
@@ -220,13 +219,25 @@ watchingFolders paths = do
 
 -- | Watch for a cell that is not going to finish.
 --
--- Twice a second, and silent nearly all of the time: it says something only
--- when the answer changes, because every event it posts is a turn of the loop
--- and a window with nothing wrong with it should cost nothing at all.
+-- Twice a second while the kernel owes an answer, and asleep the rest of the
+-- time.  It used to wake twice a second whatever was happening, which cost a
+-- window sitting still about twenty-eight milliseconds of every second to
+-- learn that nothing had changed.
+--
+-- A cell that will not finish is a request that is never answered, so there
+-- is nothing to watch for until one is outstanding.  A kernel that dies is
+-- not watched for here at all, and never was: the reader thread is blocked on
+-- the pipe and hears the end of it, and this answers 'Stalled' False for a
+-- kernel that is not running.
+--
+-- The wait is skipped while something is already reported stuck, because the
+-- news that it is over arrives as the request being answered, which is also
+-- what empties the map this would wait on.
 watchdog :: Env -> Producer Event IO ()
 watchdog env = go False
   where
     go before = do
+      unless before (liftIO (awaitBusy (envKernel env)))
       liftIO (threadDelay 500000)
       alive <- liftIO (kernelAlive (envKernel env))
       waiting <- liftIO (outstanding (envKernel env))

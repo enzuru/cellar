@@ -32,6 +32,7 @@ module Cellar.Client
   , waitingFor
   , waitingOp
   , stalled
+  , awaitBusy
   , markReady
   , stopKernel
   , restartKernel
@@ -39,6 +40,7 @@ module Cellar.Client
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
 import Control.Concurrent.MVar
+import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, unless, void)
 import qualified Data.ByteString as B
@@ -88,7 +90,10 @@ data Running = Running
 data Kernel = Kernel
   { kernelCommand :: (FilePath, [String])
   , kernelRunning :: IORef (Maybe Running)
-  , kernelPending :: IORef (M.Map RequestId Pending)
+    -- | What the kernel owes an answer for.  A 'TVar' rather than an 'IORef'
+    -- so that a thread can wait for the kernel to be busy instead of asking
+    -- twice a second whether it is.
+  , kernelPending :: TVar (M.Map RequestId Pending)
   , kernelNextId :: IORef Int
     -- | Whole messages the reader thread has taken off the pipe, newest first.
     -- The main loop swaps this out; nothing else touches it.
@@ -111,7 +116,7 @@ startKernel :: FilePath -> [String] -> IO Kernel
 startKernel program arguments = do
   kernel <- Kernel (program, arguments)
     <$> newIORef Nothing
-    <*> newIORef M.empty
+    <*> newTVarIO M.empty
     <*> newIORef 0
     <*> newIORef []
     <*> newEmptyMVar
@@ -208,7 +213,7 @@ restartKernel kernel = do
 -- it.  Nothing is waiting afterwards, and the refusals are on their way.
 failEverything :: Kernel -> String -> IO ()
 failEverything kernel why = do
-  waiting <- atomicModifyIORef' (kernelPending kernel) (\m -> (M.empty, m))
+  waiting <- atomically (swapTVar (kernelPending kernel) M.empty)
   forM_ (M.keys waiting) $ \requestId -> refuse kernel requestId why
 
 -- | Run something for its effect and swallow whatever it throws.  Used only
@@ -254,8 +259,8 @@ sendRequest kernel requestId op arguments = do
     Nothing -> refuse kernel requestId "the kernel is not running"
     Just r -> do
       now <- getMonotonicTime
-      atomicModifyIORef' (kernelPending kernel)
-        (\m -> (M.insert requestId (Pending now op) m, ()))
+      atomically (modifyTVar' (kernelPending kernel)
+                              (M.insert requestId (Pending now op)))
       sent <- try (do B.hPut (runningStdin r) (requestBytes (number requestId) op arguments)
                       hFlush (runningStdin r))
                 :: IO (Either SomeException ())
@@ -275,12 +280,12 @@ refuse kernel requestId why = do
   ring kernel
 
 outstanding :: Kernel -> IO Int
-outstanding kernel = M.size <$> readIORef (kernelPending kernel)
+outstanding kernel = M.size <$> readTVarIO (kernelPending kernel)
 
 -- | How long the kernel has kept the oldest unanswered request waiting.
 waitingFor :: Kernel -> IO (Maybe Double)
 waitingFor kernel = do
-  waiting <- readIORef (kernelPending kernel)
+  waiting <- readTVarIO (kernelPending kernel)
   case oldest waiting of
     Nothing -> pure Nothing
     Just p -> do
@@ -289,7 +294,7 @@ waitingFor kernel = do
 
 -- | What the oldest unanswered request asked for.
 waitingOp :: Kernel -> IO (Maybe String)
-waitingOp kernel = fmap pendingOp . oldest <$> readIORef (kernelPending kernel)
+waitingOp kernel = fmap pendingOp . oldest <$> readTVarIO (kernelPending kernel)
 
 oldest :: M.Map RequestId Pending -> Maybe Pending
 oldest waiting = case M.elems waiting of
@@ -303,6 +308,18 @@ oldest waiting = case M.elems waiting of
 -- no way to tell it apart from one that is merely slow -- that is the halting
 -- problem, and Cellar is not going to solve it on a timer -- which is why the
 -- shell asks the person rather than deciding by itself.
+-- | Block until the kernel owes an answer.
+--
+-- There is nothing to watch until it does.  A cell that will not finish is a
+-- request that is never answered, so the watchdog has work only while
+-- something is outstanding, and a window sitting still should cost nothing at
+-- all.  A kernel that dies is not this: the reader thread is blocked on the
+-- pipe and hears the end of it, which is already how that is noticed.
+awaitBusy :: Kernel -> IO ()
+awaitBusy kernel = atomically $ do
+  waiting <- readTVar (kernelPending kernel)
+  check (not (M.null waiting))
+
 stalled :: Kernel -> Double -> IO Bool
 stalled kernel seconds = maybe False (> seconds) <$> waitingFor kernel
 
@@ -316,8 +333,8 @@ stalled kernel seconds = maybe False (> seconds) <$> waitingFor kernel
 markReady :: Kernel -> IO ()
 markReady kernel = do
   now <- getMonotonicTime
-  atomicModifyIORef' (kernelPending kernel)
-    (\m -> (M.map (\p -> p { pendingSent = now }) m, ()))
+  atomically (modifyTVar' (kernelPending kernel)
+                          (M.map (\p -> p { pendingSent = now })))
 
 -- Listening
 
@@ -364,9 +381,9 @@ interpret kernel message = case message of
   where
     -- A reply is worth handing on only if somebody is still waiting for it.
     forget requestId reply = do
-      found <- atomicModifyIORef' (kernelPending kernel) $ \waiting ->
-        (M.delete requestId waiting, M.lookup requestId waiting)
+      found <- atomically $ stateTVar (kernelPending kernel) $ \waiting ->
+        (M.lookup requestId waiting, M.delete requestId waiting)
       pure [reply | isJust found]
     refusals why = do
-      waiting <- atomicModifyIORef' (kernelPending kernel) (\m -> (M.empty, m))
+      waiting <- atomically (swapTVar (kernelPending kernel) M.empty)
       pure [Refused requestId why | requestId <- M.keys waiting]
