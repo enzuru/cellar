@@ -254,6 +254,31 @@ tests window root = do
     check window "a change after an undo clears what there was to redo"
       [] (stateRedo branched)
 
+  section "the menu on a cell"
+  picked <- stateOf window
+  forM_ (currentTab picked) $ \tab -> do
+    -- A right-click on a cell is about that cell.  It used to pick the whole
+    -- column, which put the active cell on the first row, so every row
+    -- operation in the menu was about row 1 whatever was clicked.
+    happens window (GridSaid (tabId tab) (Pressed (Ref 0 0) 1))
+    happens window (CellChosen (tabId tab) (Ref 4 2))
+    chosen <- stateOf window
+    check window "a right-click on a cell makes that cell the active one"
+      (Just (Ref 4 2)) (modelActive . tabGrid <$> tabById (tabId tab) chosen)
+
+    -- Inside a block it changes nothing: the menu it opens carries the
+    -- formulas, and those are about the block somebody has just taken.
+    happens window (GridSaid (tabId tab) (Pressed (Ref 1 0) 1))
+    happens window (GridSaid (tabId tab) (KeyDown keyDown True))
+    happens window (GridSaid (tabId tab) (KeyDown keyDown True))
+    block <- stateOf window
+    happens window (CellChosen (tabId tab) (Ref 2 0))
+    kept <- stateOf window
+    check window "and a right-click inside a block leaves the block alone"
+      (selectionOf . tabGrid <$> tabById (tabId tab) block)
+      (selectionOf . tabGrid <$> tabById (tabId tab) kept)
+    void (quiet window)
+
   section "a formula about a block"
   summing <- stateOf window
   forM_ (currentTab summing) $ \tab -> do

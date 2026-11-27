@@ -99,6 +99,10 @@ update state = \case
     (\t -> t { tabGrid = fromMaybe (tabGrid t) (selectLine axis index (tabGrid t)) })
     state
 
+  CellChosen tab r -> stay $ withTab tab
+    (\t -> t { tabGrid = fromMaybe (tabGrid t) (pickCell r (tabGrid t)) })
+    state
+
   DragBegun tab axis index -> dragging tab (Just (axis, index, index)) state
   DragMoved tab index -> case dragOf tab state of
     Just (axis, from, _) -> dragging tab (Just (axis, from, index)) state

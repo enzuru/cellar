@@ -68,6 +68,10 @@ BOOK="$OUT/menus.cellar"
 cellar_workbook "$BOOK" "Summary"
 SHEET="Summary"
 cellar_cell "$BOOK" "$SHEET" A1 '"first"'
+# A marker far enough down the sheet to tell "the row that was clicked" from
+# "the first row".  The steps below put a row in and take one out, so it is
+# back on row 21 by the time the last one looks for it.
+cellar_cell "$BOOK" "$SHEET" A21 '"marker"'
 
 dbus-run-session -- "$CELLAR" "$BOOK" > "$OUT/app.log" 2>&1 &
 APP=$!
@@ -117,6 +121,24 @@ shot 5-column-deleted
 settle 20 says "$BOOK" '(columns . 26)'
 expect "Ctrl+Alt+- makes the sheet a column narrower" \
   says "$BOOK" '(columns . 26)'
+
+echo "5. the menu on a cell is about the row that cell is on"
+# A right-click on a cell used to pick the whole column, which put the active
+# cell on the first row.  Every row operation in the menu was then about row
+# 1, whatever had been clicked.  Escape closes the menu and leaves the pick.
+# The rows are 25px apart and the view has scrolled down by one by now, so
+# y=654 is row 21.  The screenshot names the cell, which is how to read the
+# right number again if this ever moves.
+missing () { ! grep -q "$2" "$1"; }
+xdotool mousemove 115 654 click 3; sleep 3
+shot 6-cell-menu
+xdotool key Escape; sleep 2
+xdotool key ctrl+minus; sleep 3
+shot 7-cell-row-deleted
+settle 20 missing "$BOOK" marker
+expect "a right-click on a cell deletes the row that cell is on" \
+  missing "$BOOK" marker
+expect "and leaves the first row where it is" says "$BOOK" '("A1"'
 
 echo
 echo "app log (excluding harmless environment noise):"

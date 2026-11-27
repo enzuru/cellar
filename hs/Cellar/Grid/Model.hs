@@ -35,6 +35,7 @@ module Cellar.Grid.Model
   , withPalette
   , paletteFor
   , withActive
+  , pickCell
   , stretchTo
   , stretchLine
   , selectionOf
@@ -270,6 +271,25 @@ selectLine axis index model
     (corner, far) = case axis of
       Row -> (Ref index 0, Ref index (viewColumns view - 1))
       Column -> (Ref 0 index, Ref (viewRows view - 1) index)
+
+-- | What a right-click on a cell does to the block.
+--
+-- A click inside the block leaves everything alone, so that a menu about the
+-- block is about the block somebody has just taken.  A click anywhere else
+-- is a click: that cell becomes the active one, and the block is that cell.
+--
+-- Without this a right-click on a cell said nothing about the cell at all,
+-- and the row operations in the menu were about whatever row the active cell
+-- happened to be on.
+pickCell :: Ref -> GridModel -> Maybe GridModel
+pickCell r model
+  | not (viewHolds (modelView model) r) = Nothing
+  | inside = Just model
+  | otherwise = withActive r model
+  where
+    (Ref top left, Ref bottom right) = selectionOf model
+    inside = refRow r >= top && refRow r <= bottom
+               && refColumn r >= left && refColumn r <= right
 
 -- | Take the block out to a whole row or column, keeping the anchor.
 --

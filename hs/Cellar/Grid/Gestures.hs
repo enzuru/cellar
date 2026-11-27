@@ -41,6 +41,7 @@ import Cellar.Ref
 -- with no opinion about what the sheet should do next.
 data GridGesture
   = LinePicked Axis Int         -- ^ A right-click on a row number or a heading.
+  | CellPicked Ref              -- ^ A right-click on a cell.
   | BlockGrewTo Ref             -- ^ A drag across the cells reached this one.
   | LineExtended Axis Int       -- ^ Shift and a click on a row number or a
                                 -- heading, which takes the block out to it.
@@ -172,14 +173,17 @@ takeColumnView gestures view = do
 installCellHandles :: Gestures -> Gtk.Label -> IO ()
 installCellHandles gestures label = do
   widget' <- Gtk.toWidget label
-  installLineClickOn gestures widget' Column (fmap (fmap refColumn) (refOf widget'))
+  -- A cell names itself, and the menu it opens is about the row and the
+  -- column that cell is on.
+  installMenuClickOn gestures widget' (\_ -> fmap CellPicked <$> refOf widget')
 
 installGutterHandles :: Gestures -> Gtk.Label -> IO ()
 installGutterHandles gestures label = do
   widget' <- Gtk.toWidget label
   Gtk.widgetSetCursorFromName label (Just "grab")
   installRowDrag gestures widget'
-  installLineClickOn gestures widget' Row (rowOf widget')
+  installMenuClickOn gestures widget'
+    (\_ -> fmap (LinePicked Row) <$> rowOf widget')
 
 -- | Which cell a recycled widget is standing for, read back from its name.
 refOf :: Gtk.Widget -> IO (Maybe Ref)
@@ -197,12 +201,14 @@ rowOf widget' = do
 
 -- | The line menu, on a cell, a row number or the header row.
 --
--- What line it is about is either known when the gesture is installed -- a
--- cell knows which row and column it stands for -- or worked out from where
--- the pointer is, which is what the header row does, since one gesture there
--- covers every column.
-installLineClickOn :: Gestures -> Gtk.Widget -> Axis -> IO (Maybe Int) -> IO ()
-installLineClickOn gestures label axis locate = forM_ (gestureMenu gestures) $ \model -> do
+-- What the menu is about is either known when the gesture is installed -- a
+-- cell and a row number each name themselves -- or worked out from where the
+-- pointer is, which is what the header row does, since one gesture there
+-- covers every column.  So the caller says what a press at this place means,
+-- and answers with nothing where the menu does not belong.
+installMenuClickOn
+  :: Gestures -> Gtk.Widget -> (Double -> IO (Maybe GridGesture)) -> IO ()
+installMenuClickOn gestures label pick = forM_ (gestureMenu gestures) $ \model -> do
   gesture <- addOwnedController label =<< Gtk.gestureClickNew
   Gtk.gestureSingleSetButton gesture 3
   -- Capture, not bubble, because of where this ends up: a column heading is a
@@ -211,13 +217,10 @@ installLineClickOn gestures label axis locate = forM_ (gestureMenu gestures) $ \
   -- never hears the press at all.
   Gtk.eventControllerSetPropagationPhase gesture Gtk.PropagationPhaseCapture
   void $ GI.on gesture #pressed $ \_ x y -> do
-    told <- locate
-    found <- case told of
-      Just index -> pure (Just index)
-      Nothing -> fmap (\(position, _, _) -> position) <$> headerUnder gestures x
-    forM_ found $ \index -> do
+    found <- pick x
+    forM_ found $ \picked -> do
       void (Gtk.gestureSetState gesture Gtk.EventSequenceStateClaimed)
-      gesturePost gestures (LinePicked axis index)
+      gesturePost gestures picked
       popover <- Gtk.popoverMenuNewFromModel (Just model)
       Gtk.popoverSetHasArrow popover False
       Gtk.widgetSetParent popover label
@@ -281,7 +284,9 @@ wireHeaderRow gestures = do
         forM_ header $ \row -> do
           writeIORef (gestureRow gestures) (Just row)
           installColumnDrag gestures row
-          installLineClickOn gestures row Column (pure Nothing)
+          installMenuClickOn gestures row $ \x ->
+            fmap (\(position, _, _) -> LinePicked Column position)
+              <$> headerUnder gestures x
 
 installColumnDrag :: Gestures -> Gtk.Widget -> IO ()
 installColumnDrag gestures row = do

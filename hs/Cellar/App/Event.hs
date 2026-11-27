@@ -118,6 +118,8 @@ data Event
   | WindowClosing
   -- The gestures, which are not declarative
   | LineChosen TabId Axis Int
+  | CellChosen TabId Ref
+    -- ^ A right-click on a cell, which is what the menu that opens is about.
   | DragBegun TabId Axis Int
   | DragMoved TabId Int
   | DragDropped TabId Int

@@ -227,6 +227,7 @@ gesturesFor env tab = do
 fromGesture :: TabId -> GridGesture -> Event
 fromGesture tab gesture = case gesture of
   LinePicked axis index -> LineChosen tab axis index
+  CellPicked r -> CellChosen tab r
   BlockGrewTo r -> BlockGrown tab r
   LineExtended axis index -> LineReachedTo tab axis index
   DragBegan axis index -> DragBegun tab axis index
