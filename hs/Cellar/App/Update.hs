@@ -116,7 +116,8 @@ update state = \case
       in case moved of
            Nothing -> dragging tab Nothing cleared
            Just (model, command) ->
-             let after' = withTab tab (\t -> t { tabGrid = model }) cleared
+             let after' = remembering state
+                   (withTab tab (\t -> t { tabGrid = model }) cleared)
              in Step after' (Now (ShowDrag tab Nothing)
                              : carrying after' tab (Ask command))
 
@@ -639,7 +640,8 @@ acting state = \case
   RecalculateSheet -> recalculating state
 
   ClearCell -> onSheet $ withSheet $ \tab ->
-    Step state (carrying state (tabId tab) (Ask (Clear (activeOf tab))))
+    let cleared = remembering state state
+    in Step cleared (carrying cleared (tabId tab) (Ask (Clear (activeOf tab))))
 
   EditCell -> editing state
 
@@ -719,9 +721,12 @@ acting state = \case
     along axis tab = case axis of
       Row -> refRow (activeOf tab)
       Column -> refColumn (activeOf tab)
-    -- A line that moved, and the request that tells the kernel so.
+    -- A line that moved, and the request that tells the kernel so.  Every
+    -- one of these changes what the workbook says, so each is a step to go
+    -- back to.
     asked' tab model command =
-      let changed = withTab (tabId tab) (\t -> t { tabGrid = model }) state
+      let changed = remembering state
+            (withTab (tabId tab) (\t -> t { tabGrid = model }) state)
       in Step changed (carrying changed (tabId tab) (Ask command))
     suggestion = case (stateWorkbook state, stateScratch state) of
       (Just open, False) -> workbookName open

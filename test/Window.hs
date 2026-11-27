@@ -279,6 +279,26 @@ tests window root = do
       (selectionOf . tabGrid <$> tabById (tabId tab) kept)
     void (quiet window)
 
+  section "going back over a line"
+  lines' <- stateOf window
+  forM_ (currentTab lines') $ \tab -> do
+    happens window (CellEdited (tabId tab) (Ref 8 0) "\"keep me\"")
+    _ <- settle window (holds (tabId tab) (Ref 8 0) "keep me")
+    _ <- quiet window
+    happens window (GridSaid (tabId tab) (Pressed (Ref 8 0) 1))
+    happens window (Act (DeleteLine Row))
+    gone <- settle window $ \s -> case currentTab s of
+      Nothing -> False
+      Just now -> displayAt (modelView (tabGrid now)) (Ref 8 0) /= "keep me"
+    check window "deleting a row takes the cell that was on it" True gone
+    _ <- quiet window
+    happens window (Act Undo)
+    restored <- settle window $ \s -> case currentTab s of
+      Nothing -> False
+      Just now -> displayAt (modelView (tabGrid now)) (Ref 8 0) == "keep me"
+    check window "and undo puts the deleted row back" True restored
+    void (quiet window)
+
   section "a formula about a block"
   summing <- stateOf window
   forM_ (currentTab summing) $ \tab -> do
